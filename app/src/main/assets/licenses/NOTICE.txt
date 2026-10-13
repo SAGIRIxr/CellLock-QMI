@@ -1,0 +1,8 @@
+CellLock 0.3.0
+GPL-3.0-only
+This application includes a QRTR transport adapted from btsearch/bunnylock (a0dc51f85e2f34431dfc5f82a42b8b7482cb8790).
+Cell lock protocol implementation references Fronsipswu/qcom-band-menu (a66248e383f02899bab36a2401d8470d45e18ac9).
+Upstream sources: https://github.com/btsearch/bunnylock ; https://github.com/Fronsipswu/qcom-band-menu
+Corresponding source is distributed in CellLock-0.3.0-source.zip alongside this APK.
+Public source: https://github.com/SAGIRIxr/CellLock-QMI
+Versioned source archives: https://github.com/SAGIRIxr/CellLock-QMI/releases

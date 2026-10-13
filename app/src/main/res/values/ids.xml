@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="field_arfcn" type="id" />
+    <item name="field_pci" type="id" />
+    <item name="field_band" type="id" />
+    <item name="field_scs" type="id" />
+</resources>
