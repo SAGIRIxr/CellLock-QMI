@@ -69,7 +69,7 @@ final class Bands {
         }
     }
 
-    /** {频段, 起, 止}，重叠时排在前面的优先（国内常用频段在前）。 */
+    /** {频段, 下行频点起, 止}，重叠时保留全部候选。 */
     private static final int[][] NR_RANGES = {
             {78, 620000, 653333}, {41, 499200, 537999}, {79, 693334, 733333}, {28, 151600, 160600},
             {1, 422000, 434000}, {3, 361000, 376000}, {5, 173800, 178800}, {8, 185000, 192000},
@@ -93,15 +93,30 @@ final class Bands {
             {66, 66436, 67335}, {71, 68586, 68935},
     };
 
-    /** 由 NR-ARFCN 推算频段；优先返回本机支持的频段。找不到返回 0。 */
-    static int nrBandForArfcn(long arfcn, BitSet supported) {
-        int fallback = 0;
-        for (int[] r : NR_RANGES) {
-            if (arfcn < r[1] || arfcn > r[2]) continue;
-            if (supported == null || supported.isEmpty() || supported.get(r[0])) return r[0];
-            if (fallback == 0) fallback = r[0];
+    static BitSet nrCandidates(long arfcn) {
+        BitSet result = new BitSet();
+        for (int[] range : NR_RANGES) if (arfcn >= range[1] && arfcn <= range[2]) result.set(range[0]);
+        return result;
+    }
+
+    static boolean knownNrBand(int band) {
+        for (int[] range : NR_RANGES) if (range[0] == band) return true;
+        return false;
+    }
+
+    static int uniqueNrBand(long arfcn) {
+        BitSet candidates = nrCandidates(arfcn);
+        return candidates.cardinality() == 1 ? candidates.nextSetBit(0) : 0;
+    }
+
+    static String nrCandidateLabel(long arfcn) {
+        BitSet candidates = nrCandidates(arfcn);
+        StringBuilder label = new StringBuilder();
+        for (int band = candidates.nextSetBit(0); band >= 0; band = candidates.nextSetBit(band + 1)) {
+            if (label.length() > 0) label.append(" / ");
+            label.append('n').append(band);
         }
-        return fallback;
+        return label.toString();
     }
 
     static int lteBandForEarfcn(long earfcn) {

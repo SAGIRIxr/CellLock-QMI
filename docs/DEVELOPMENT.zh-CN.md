@@ -185,11 +185,15 @@ Root 子进程退出保护可运行 `./tests/run-root-shell.ps1 -JsonJar $jsonJa
 
 `ReadingPolicyTest` 覆盖 DIAG 入口选择，以及电话已有服务身份时 NAS 补入异频邻区、去重、部分字段与冲突身份保留；`RadioCellTest` 包含 n77/n78 重叠频段、显示 / 填表一致性及可信服务优先；`MeasurementDecoderTest` 核对 NAS 标识的端序、占位值和邻区归属边界。`native/test_read` 与 `test_diag` 都只做内存自检，不发送基带请求。
 
+0.4.6 的 `NasVerificationTest` 覆盖错误频段校正、合法频段保留、重叠候选、前后服务身份核验、无效信号、单项查询失败及双卡 NR 独立解码；默认重放 `tests/fixtures/nas-verified.redacted.jsonl` 的两卡真机格式。夹具已将网络标识置零，不包含可识别的 CI/NCI/TAC/PLMN。
+
 `UiFlowTest` 在 Android instrumentation 中实例化真实页面，用记录命令的 Host 检查重排后的 NR / LTE 小区、频点、解锁与频段参数，不执行命令；还检查表单重建、精简字段以及 320dp / 130% 字体下的信号文字。先用同一默认 debug 签名安装当前 APK，再运行下列命令；脚本使用 SDK 35 / Build Tools 34.0.0 和本机默认 debug keystore，临时测试包运行后卸载，不打入正式 APK。仅连接目标设备，测试会停止目标应用：
 
 ```powershell
 ./tests/run-ui.ps1 -Sdk $env:ANDROID_SDK_ROOT
 ```
+
+测试 APK 还包含显式只读真机验收 `DeviceReadingTest`，默认 UI 脚本不会运行它。单独重新安装 `tests/ui-test/build/ui-checks.apk` 后，运行 `adb shell am instrument -w com.celllock.app.tests/com.celllock.app.DeviceReadingTest`：使用实际 App UID、现有权限、Root 及 `RadioReader`，逐卡核对新 QMI 查询、服务身份、频段补入及 DIAG 候选。完成后卸载 `com.celllock.app.tests`；权限组合验证应在外部记录并恢复原有授权、标志与 AppOps，测试类本身不修改权限或网络设置。它要求被测设备接口可用且采样期间服务稳定，不是通用设备能力判定器。
 
 0.4.4 的页面副标题、SIM 来源后缀、当前连接详情及采集来源说明已隐藏；邻区保留来源和信号质量，底层 `details` 与诊断能力保持。锁定页按制式 / 频段 / 小区、NR / LTE 排序，读取失败仍显示未知。NAS 仅补充新观测，不覆写已有电话数据；相同制式、频点、PCI 且身份不冲突时去重，纯频点提示不重复已有小区。服务选择先比较可信映射，再比较 NR / LTE 和身份完整度，避免补读 NR 抢占已映射 LTE。
 

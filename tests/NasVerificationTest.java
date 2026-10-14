@@ -1,0 +1,132 @@
+package com.celllock.app;
+
+import android.os.SystemClock;
+import android.telephony.CellInfo;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import org.json.JSONObject;
+
+/** 同卡关联、频段校正及脱敏真机回包重放；不连接手机或基带。 */
+public final class NasVerificationTest {
+    private static int checks;
+    private static void check(boolean value, String message) {
+        checks++; if (!value) throw new AssertionError(message);
+    }
+    private static ByteBuffer bytes(int size) { return ByteBuffer.allocate(size).order(ByteOrder.LITTLE_ENDIAN); }
+    private static String hex(byte[] bytes) {
+        StringBuilder result = new StringBuilder();
+        for (byte b : bytes) result.append(String.format("%02x", b & 255));
+        return result.toString();
+    }
+    private static JSONObject record(int message, int slot, JSONObject tlvs) throws Exception {
+        return new JSONObject().put("service", 3).put("message", message).put("slot", slot)
+                .put("transport", 0).put("result", 0).put("error", 0).put("tlvs", tlvs);
+    }
+    private static JSONObject system(long nci, int pci) throws Exception {
+        return new JSONObject().put("4a", "0200").put("54", hex(bytes(2).putShort((short)pci).array()))
+                .put("5e", hex(bytes(8).putLong(nci).array())).put("5d", "01000000");
+    }
+    private static JSONObject location(int arfcn, int pci, long nci, int rsrp) throws Exception {
+        ByteBuffer b = bytes(22); b.position(6);
+        b.putLong(nci).putShort((short)pci).putShort((short)-32768).putShort((short)rsrp).putShort((short)-32768);
+        return new JSONObject().put("2e", hex(bytes(4).putInt(arfcn).array())).put("2f", hex(b.array()));
+    }
+    private static JSONObject rf(int arfcn, int enumeration) throws Exception {
+        return new JSONObject().put("01", hex(bytes(6).put((byte)1).put((byte)12).putShort((short)enumeration).putShort((short)arfcn).array()))
+                .put("11", hex(bytes(8).put((byte)1).put((byte)12).putShort((short)enumeration).putInt(arfcn).array()))
+                .put("12", hex(bytes(6).put((byte)1).put((byte)12).putInt(17).array()));
+    }
+    private static String batch(int slot, JSONObject first, JSONObject loc, JSONObject rf, JSONObject sig, JSONObject last) throws Exception {
+        return record(0x45, slot, new JSONObject()) + "\n" + record(0x4d, slot, first) + "\n"
+                + record(0x43, slot, loc) + "\n" + record(0x31, slot, rf) + "\n"
+                + record(0x4f, slot, sig) + "\n" + record(0x4d, slot, last);
+    }
+    private static RadioCell phone(int arfcn, int pci, int band, long nci) throws Exception {
+        return RadioCell.parse(new JSONObject().put("nr", true).put("registered", true).put("arfcn", arfcn)
+                .put("pci", pci).put("band", band).put("rsrp", -100).put("identity", nci).put("timestamp", SystemClock.now)
+                .put("details", new JSONObject().put("频段来源", "系统")), "Root 电话");
+    }
+    public static void main(String[] args) throws Exception {
+        JSONObject sys = system(123456, 139), loc = location(154570, 139, 123456, -32768);
+        JSONObject radio = rf(154570, 257), sig = new JSONObject().put("17", hex(bytes(4).putShort((short)-97).putShort((short)81).array())).put("18", "f5ff");
+        String raw = batch(0, sys, loc, radio, sig, sys);
+        RadioCell qmi = MeasurementDecoder.nas(raw, 0).get(0);
+        check(qmi.band == 28 && qmi.pci == 139 && qmi.identity == 123456 && qmi.registered, "verified NR service identity and RF enum n28");
+        check(qmi.rsrp == -97 && qmi.details.get("SNR").equals("8.1 dB") && qmi.details.get("RSRQ").equals("-11 dB"), "independent NR signal");
+        check(qmi.details.get("SCS").equals("30 kHz") && qmi.details.get("带宽").equals("100 MHz"), "SYS SCS and RF width");
+        check(qmi.timestamp == 0 && !qmi.mapped, "QMI does not invent timestamps or phone mapping");
+        RadioCell wrong = phone(154570, 139, 41, 123456);
+        check(wrong.band == 28 && wrong.bandLabel().equals("n28（推算）") && wrong.details.get("原报频段").equals("n41"), "old reported mismatch corrected once in shared model");
+        List<RadioCell> cells = new ArrayList<>(List.of(wrong));
+        RadioReader.supplementReadings(cells, List.of(qmi));
+        RadioCell corrected = cells.get(0);
+        check(cells.size() == 1 && corrected.bandLabel().equals("n28（校正）") && corrected.bandNotice().contains("系统原报 n41"), "QMI correction merges into primary phone cell");
+        check(corrected.rsrp == -100 && corrected.timestamp == wrong.timestamp && corrected.receivedAt == wrong.receivedAt && corrected.mapped, "existing phone signal/time/provenance retained");
+        check(!corrected.details.containsKey("信号来源") && corrected.details.get("频段").equals("28"), "unused QMI RSRP does not suppress phone history or retain wrong detail band");
+        RadioCell neighbor = RadioCell.measured(true, false, 154570, 78, -110, "DIAG NR").withServingBand(corrected);
+        check(neighbor.hasTarget(corrected) && neighbor.targetBand(corrected) == 28 && !neighbor.mapped && neighbor.timestamp == 0, "corrected neighbor remains eligible without invented SIM or timestamp");
+        check(RadioCell.parse(corrected.json(), "Root 电话").bandLabel().equals("n28（校正）"), "correction survives Root JSON boundary");
+        RadioCell partial = RadioCell.parse(wrong.json().put("pci", CellInfo.UNAVAILABLE).put("rsrp", CellInfo.UNAVAILABLE), "Root 电话");
+        RadioCell filled = partial.supplement(qmi);
+        check(filled.pci == 139 && filled.rsrp == -97 && filled.timestamp == partial.timestamp && filled.details.containsKey("信号来源"), "missing signal and PCI supplemented without new measurement time");
+        check(wrong.supplement(qmi.withIdentity(999)) == wrong, "conflicting NCI never merged");
+        check(wrong.withDetails(java.util.Map.of("TAC","123")).supplement(qmi.withDetails(java.util.Map.of("TAC","456")))
+                .details.get("TAC").equals("123"), "conflicting tracking area never merged");
+        RadioCell stale = RadioCell.parse(wrong.json().put("timestamp", SystemClock.now - 60_001), "Root 电话");
+        check(stale.supplement(qmi) == stale && !stale.hasTarget(stale), "fresh QMI cannot revive stale phone identity");
+        RadioCell n77 = phone(640000, 1, 77, 123);
+        check(n77.withRfBand(78).band == 77, "legal reported n77 retained in overlap");
+        RadioCell ambiguous = phone(640000, 1, 28, 123);
+        check(ambiguous.band == 0 && ambiguous.bandLabel().contains("n77 / n78") && ambiguous.hasTarget(ambiguous), "ambiguous correction keeps manual lock form available");
+        check(ambiguous.withRfBand(77).band == 77, "RF can resolve overlap");
+        check(phone(504990, 48, 41, 99).bandLabel().equals("n41"), "normal n41 is not corrected");
+        check(MeasurementDecoder.nas(raw, 1).isEmpty(), "slot mismatch rejected");
+        check(MeasurementDecoder.nas(batch(1, sys, loc, radio, sig, sys), 1).get(0).band == 28, "SIM2 NR equally supported");
+        JSONObject second = system(777, 48);
+        RadioCell card2 = MeasurementDecoder.nas(batch(1, second, location(504990, 48, 777, -990), rf(504990, 259), sig, second), 1).get(0);
+        check(card2.band == 41 && card2.arfcn == 504990 && card2.rsrp == -99, "independent SIM2 NR and existing LOC signal retained");
+        check(MeasurementDecoder.nas(raw, 0).get(0).band == 28, "SIM2 decode does not cache band into SIM1");
+        RadioCell oldRf = MeasurementDecoder.nas(batch(1, second, location(504990, 48, 777, -990), new JSONObject(rf(504990,259).toString()).put("11", JSONObject.NULL), sig, second),1).get(0);
+        check(oldRf.band == 0, "malformed extension never falls back to truncated NR channel");
+        JSONObject oldOnly = rf(504990,259); oldOnly.remove("11");
+        check(MeasurementDecoder.nas(batch(1,second,location(504990,48,777,-990),oldOnly,sig,second),1).get(0).band == 0, "old 16-bit NR field ignored");
+        check(MeasurementDecoder.nas(batch(0,sys,loc,radio,sig,system(999,139)),0).get(0).details.get("SCS") == null, "handover between bookends rejects supplemental data");
+        check(!MeasurementDecoder.nas(batch(0,sys,loc,rf(504990,259),sig,sys),0).get(0).details.containsKey("SCS"), "RF frequency conflict rejects unassociated signal and metadata");
+        List<JSONObject> failedRecords = MeasurementDecoder.records(raw);
+        failedRecords.get(3).put("error",3);
+        StringBuilder failedBatch = new StringBuilder();
+        for (JSONObject frame : failedRecords) failedBatch.append(frame).append('\n');
+        RadioCell unsupported = MeasurementDecoder.nas(failedBatch.toString(),0).get(0);
+        check(unsupported.rsrp == -97 && unsupported.details.containsKey("SCS") && !unsupported.details.containsKey("射频频段"), "unsupported RF query retains SYS, SIG and location fallback");
+        JSONObject noService = new JSONObject(sys.toString()).put("4a", "0000");
+        RadioCell inactive = MeasurementDecoder.nas(batch(0,noService,loc,radio,sig,noService),0).get(0);
+        check(!inactive.registered && !inactive.details.containsKey("SCS"), "inactive RAT cannot become serving from residual fields");
+        JSONObject invalidSig = new JSONObject().put("17", "00800080").put("18", "0080");
+        RadioCell invalid = MeasurementDecoder.nas(batch(0,sys,loc,radio,invalidSig,sys),0).get(0);
+        check(!invalid.hasSignal() && !invalid.details.containsKey("SNR") && !invalid.details.containsKey("RSRQ"), "invalid signal placeholders ignored");
+        check(MeasurementDecoder.nas(batch(0,sys,loc,radio,new JSONObject().put("17","00"),sys),0).get(0).details.containsKey("射频频段"), "malformed SIG preserves verified SYS and RF");
+        RadioCell noLoc = MeasurementDecoder.nas(batch(0,sys,new JSONObject(),radio,sig,sys),0).get(0);
+        check(noLoc.registered && noLoc.pci == 139 && noLoc.identity == 123456 && noLoc.band == 28, "stable SYS plus RF can supply missing service");
+        String failed = raw.replace("\"message\":69", "\"message\":0");
+        check(MeasurementDecoder.nas(failed,0).isEmpty(), "no successful bind means no data");
+        if (args.length == 1) replay(Path.of(args[0]));
+        System.out.println("NasVerification: " + checks + " checks passed");
+    }
+    private static void replay(Path path) throws Exception {
+        List<JSONObject> records = MeasurementDecoder.records(Files.readString(path));
+        for (int at = 0; at < records.size(); at += 6) {
+            int slot = records.get(at).getInt("slot"); StringBuilder raw = new StringBuilder();
+            for (int i = 0; i < 6; i++) raw.append(records.get(at+i)).append('\n');
+            List<RadioCell> cells = MeasurementDecoder.nas(raw.toString(), slot);
+            RadioCell serving = RadioCell.serving(cells);
+            check(serving != null && serving.nr == (slot == 0), "captured NR/LTE service status");
+            check(serving.arfcn == (slot == 0 ? 504990 : 1650) && serving.pci == (slot == 0 ? 48 : 111), "captured full channel and PCI");
+            check(serving.band == (slot == 0 ? 41 : 3) && serving.details.containsKey("带宽"), "captured RF band and width");
+            if (slot == 1) check(cells.stream().filter(c -> c.nr).noneMatch(c -> c.registered || c.hasSignal()), "captured SIM2 residual NR not serving");
+        }
+    }
+}

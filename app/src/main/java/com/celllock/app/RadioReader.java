@@ -24,6 +24,9 @@ import java.util.function.Consumer;
 
 /** 唯一读取协调处；接口自己负责权限，页面不使用统一电话/定位门槛。 */
 final class RadioReader {
+    static final class SimMappingChanged extends IllegalStateException {
+        SimMappingChanged() { super("所选 SIM 映射改变，已停止操作"); }
+    }
     static final class Observation {
         final List<RadioCell> cells;
         final String status;
@@ -101,7 +104,7 @@ final class RadioReader {
         if (sims.isEmpty()) sims = rootSims(phone(context, "sims", -1));
         remember(sims);
         for (SimInfo sim : sims) if (sim.subscriptionId == subscription && sim.trusted() && sim.slot == slot) return;
-        throw new IllegalStateException("所选 SIM 映射改变，已停止操作");
+        throw new SimMappingChanged();
     }
 
     private String nativeRead(String library, String args, int timeout) throws Exception {
@@ -221,12 +224,16 @@ final class RadioReader {
                 } catch (Exception ignored) { }
                 if (!current(workToken)) return;
                 if (RootShell.available() && !changed && sim != null && sim.slot <= 1) try {
+                    verifySlot(context, sim.subscriptionId, sim.slot);
                     List<RadioCell> measured = MeasurementDecoder.nas(nativeRead("libcelllock_read.so", "cells " + sim.slot, 8), sim.slot);
+                    if (!current(workToken)) return;
+                    verifySlot(context, sim.subscriptionId, sim.slot);
                     if (!measured.isEmpty()) {
                         status = cells.isEmpty() ? "QMI NAS 观测" : status + " · NAS 补充";
                         supplementReadings(cells, measured);
                     }
-                } catch (Exception ignored) { }
+                } catch (SimMappingChanged error) { changed = true; }
+                catch (Exception ignored) { }
                 if (!current(workToken)) return;
                 if (changed) diagnosticCells.clear();
                 else diagnosticCells.context(sim == null ? "无 SIM" : sim.key(), cells);
@@ -280,6 +287,8 @@ final class RadioReader {
 
     static void supplementReadings(List<RadioCell> cells, List<RadioCell> measured) {
         for (RadioCell next : measured) {
+            if (next.registered && next.details.containsKey("补充来源"))
+                for (int i = 0; i < cells.size(); i++) cells.set(i, cells.get(i).supplement(next));
             boolean duplicate = next.arfcn != CellInfo.UNAVAILABLE && cells.stream().anyMatch(old -> old.nr == next.nr && old.arfcn == next.arfcn
                     && (old.pci == next.pci && next.pci != CellInfo.UNAVAILABLE
                         || next.pci == CellInfo.UNAVAILABLE && !next.hasSignal() && next.identity < 0 && next.details.isEmpty())

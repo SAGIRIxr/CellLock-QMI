@@ -23,14 +23,14 @@ public final class RadioCellTest {
         check(!neighbor.hasTarget() && neighbor.hasTarget(serving), "same carrier can fill target without mapping or measurement timestamp");
         check(neighbor.timestamp == 0 && !neighbor.mapped, "candidate never gains fabricated provenance");
         check(!serving.hasTarget(serving), "unavailable PCI cannot lock a cell");
-        check(!neighbor.hasTarget(phone(true, 154570, 1, 1, true)), "band mismatch");
+        check(neighbor.hasTarget(phone(true, 154570, 1, 41, true)), "correcting wrong service band preserves neighbor eligibility");
         check(!neighbor.hasTarget(phone(true, 504990, 1, 41, true)), "frequency mismatch");
         check(!neighbor.hasTarget(phone(false, 154570, 1, 28, true)), "RAT mismatch");
         check(!neighbor.hasTarget(phone(true, 154570, 1, 28, false)), "neighbor is not a serving reference");
         check(!neighbor.hasTarget(null), "no serving reference");
         RadioCell n77 = phone(true, 640000, 1, 77, true);
         RadioCell overlapping = RadioCell.measured(true, false, 640000, 2, -100, "DIAG NR");
-        check(overlapping.band == 78 && overlapping.hasTarget(n77), "inferred n78 does not reject same-frequency n77 candidate");
+        check(overlapping.band == 0 && overlapping.hasTarget(n77), "ambiguous frequency accepts confirmed same-frequency n77 candidate");
         RadioCell matched = overlapping.withServingBand(n77);
         check(matched.band == 77 && matched.targetBand(n77) == 77 && matched.bandLabel().equals("n77"), "display and target use confirmed serving band");
         check(matched.timestamp == 0 && !matched.mapped && matched.receivedAt == overlapping.receivedAt,
@@ -39,7 +39,7 @@ public final class RadioCellTest {
         for (long timestamp : new long[]{SystemClock.now - 60_001, SystemClock.now + 1}) {
             RadioCell stale = RadioCell.parse(n77.json().put("timestamp", timestamp), "Root 电话");
             check(!overlapping.hasTarget(stale), "stale or future service cannot authorize DIAG target");
-            check(overlapping.withServingBand(stale).band == 78, "invalid service time cannot change inferred band");
+            check(overlapping.withServingBand(stale).band == 0, "invalid service time cannot resolve band candidates");
             check(!stale.hasTarget(stale) && !stale.hasTarget(n77), "reception time cannot revive an invalid phone target");
         }
         RadioCell boundary = RadioCell.parse(n77.json().put("timestamp", SystemClock.now - 60_000), "Root 电话");
@@ -49,9 +49,11 @@ public final class RadioCellTest {
         SystemClock.now += 15_000;
         check(!RadioCell.measured(true, false, 640000, 2, -100, "DIAG NR").hasTarget(nas), "NAS reference expires after 15 seconds");
         SystemClock.now -= 15_000;
-        RadioCell reported = RadioCell.parse(overlapping.json().put("details", new JSONObject().put("频段来源", "系统")), "Root 电话");
+        RadioCell reported = RadioCell.parse(overlapping.json().put("band", 78).put("details", new JSONObject().put("频段来源", "系统")), "Root 电话");
         check(!reported.hasTarget(n77) && reported.targetBand(n77) == 78, "explicit reported n78 is not overwritten");
-        check(!overlapping.hasTarget(phone(true, 640000, 1, 28, true)), "same frequency cannot fabricate incompatible band");
+        RadioCell unresolved = phone(true, 640000, 1, 28, true);
+        check(unresolved.band == 0 && unresolved.bandLabel().contains("n77 / n78") && overlapping.hasTarget(unresolved),
+                "incompatible report becomes candidates and allows manual confirmation");
         check(!RadioCell.measured(true, false, 154570, 65535, -100, "DIAG NR").hasTarget(serving), "native unavailable PCI cannot lock");
         check(!RadioCell.measured(false, false, 70000, 1, -100, "QMI NAS")
                 .hasTarget(phone(false, 70000, 2, 1, true)), "backend LTE frequency limit retained");
@@ -68,7 +70,7 @@ public final class RadioCellTest {
                         .put("RSRQ", "-12 dB").put("unknown", "do not display"));
         RadioCell kept = RadioCell.parse(partial, "Root 电话");
         check(kept.pci == CellInfo.UNAVAILABLE && kept.arfcn == 154570 && kept.rsrp == -98, "partial root identity keeps frequency and signal");
-        check(kept.identity == 123456 && kept.details.size() == 4 && kept.detailLabel().contains("NCI 123456"), "partial identity keeps NCI and network details");
+        check(kept.identity == 123456 && !kept.details.containsKey("unknown") && kept.detailLabel().contains("NCI 123456"), "partial identity keeps NCI and network details");
         check(RadioCell.parse(kept.json(), "Root 电话").details.equals(kept.details), "root JSON round trip");
         partial.put("arfcn", CellInfo.UNAVAILABLE).put("rsrp", CellInfo.UNAVAILABLE);
         kept = RadioCell.parse(partial, "Root 电话");

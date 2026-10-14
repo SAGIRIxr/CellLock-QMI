@@ -144,9 +144,11 @@ final class LockPage extends ScrollView {
     void fillTarget(RadioCell cell) {
         if(busy||cell==null||!cell.hasTarget(serving))return;
         sectionTabs.select(2);cellTabs.select(cell.nr?0:1);changingFields=true;
-        if(cell.nr){nrKindTabs.select(0);nrArfcn.setText(String.valueOf(cell.arfcn));nrPci.setText(String.valueOf(cell.pci));int band=cell.targetBand(serving);if(band<=0)band=Bands.nrBandForArfcn(cell.arfcn,state==null?null:state.hwNr);nrBand.setText(band>0?String.valueOf(band):"");if(band>0)selectScs(Bands.defaultScs(band));nrHint.setText(band>0?"已带入 n"+band+"，子载波间隔仍可调整。":"请确认频段与子载波间隔。");}
+        if(cell.nr){nrKindTabs.select(0);nrArfcn.setText(String.valueOf(cell.arfcn));nrPci.setText(String.valueOf(cell.pci));int band=cell.targetBand(serving);nrBand.setText(band>0?String.valueOf(band):"");if(band>0)selectScs(Bands.defaultScs(band));nrHint.setText(band>0?"已带入 n"+band+"，子载波间隔仍可调整。":"候选 "+Bands.nrCandidateLabel(cell.arfcn)+"，请确认频段与子载波间隔。");}
         else{lteArfcn.setText(String.valueOf(cell.arfcn));ltePci.setText(String.valueOf(cell.pci));}
-        if(cell.nr&&!cell.mapped)nrHint.setText("已填入所选 SIM 的同频候选，请确认频段与子载波间隔。");
+        if(cell.nr&&!cell.mapped&&cell.targetBand(serving)>0)nrHint.setText("已填入所选 SIM 的同频候选，请确认频段与子载波间隔。");
+        // shortcut: QMI SCS 尚未验证与锁定命令的对应关系，实测锁定通过后再自动带入。
+        if(cell.nr&&cell.details.containsKey("SCS"))nrHint.append(" 基带间隔 "+cell.details.get("SCS")+"；当前填写值请核对。");
         changingFields=false;showSection();updateCellUi();smoothScrollTo(0,0);
     }
 
@@ -271,8 +273,9 @@ final class LockPage extends ScrollView {
     private TextWatcher watcher(Runnable action){return new TextWatcher(){public void beforeTextChanged(CharSequence s,int start,int count,int after){}public void onTextChanged(CharSequence s,int start,int before,int count){}public void afterTextChanged(Editable text){if(!changingFields)action.run();}};}
     private void suggestNrParameters() {
         if(changingFields)return;int arfcn=InputValidator.parse(value(nrArfcn),InputValidator.MAX_NR_ARFCN);if(arfcn<0)return;
-        int band=Bands.nrBandForArfcn(arfcn,state==null?null:state.hwNr);changingFields=true;nrBand.setText(band>0?String.valueOf(band):"");if(band>0)selectScs(Bands.defaultScs(band));changingFields=false;
-        nrHint.setText(band>0?"建议 n"+band+" · "+Bands.defaultScs(band)+" kHz，可调整。":"未识别频段，请手动确认频段与间隔。");
+        int band=Bands.uniqueNrBand(arfcn);changingFields=true;nrBand.setText(band>0?String.valueOf(band):"");if(band>0)selectScs(Bands.defaultScs(band));changingFields=false;
+        String candidates=Bands.nrCandidateLabel(arfcn);
+        nrHint.setText(band>0?"建议 n"+band+" · "+Bands.defaultScs(band)+" kHz，可调整。":candidates.isEmpty()?"未识别频段，请手动确认频段与间隔。":"候选 "+candidates+"，请手动确认频段与间隔。");
     }
     private void selectScs(int value){for(int i=0;i<SCS.length;i++)if(SCS[i]==value){scs.setSelection(i);return;}}
 

@@ -51,7 +51,7 @@ final class CellsPage extends ScrollView {
     private boolean foreground, busy, disposed, reading, scheduled, cached;
     private RadioCell serving;
     private TextView autoStatus, rat, servingCaption, signal, quality, reference;
-    private TextView arfcn, pci, band, observationStatus, neighborCount, trendRange, trendStatus;
+    private TextView arfcn, pci, band, bandNotice, serviceMetrics, observationStatus, neighborCount, trendRange, trendStatus;
     private Button refreshButton, targetButton;
     private LinearLayout neighbors;
     private LineIcon bars;
@@ -130,7 +130,13 @@ final class CellsPage extends ScrollView {
         arfcn = metric(metrics, "频点");
         pci = metric(metrics, "PCI");
         band = metric(metrics, "频段");
+        band.setAutoSizeTextTypeUniformWithConfiguration(10, 21, 1, android.util.TypedValue.COMPLEX_UNIT_SP);
         hero.addView(metrics);
+        ui.gap(hero, 8);
+        bandNotice = ui.text("", 11, Ui.AMBER);
+        hero.addView(bandNotice);
+        serviceMetrics = ui.text("", 10, Ui.MUTED);
+        hero.addView(serviceMetrics);
         ui.gap(hero, 13);
         targetButton = ui.button("用作锁定目标", true);
         hero.addView(targetButton, ui.fill(41));
@@ -346,6 +352,15 @@ final class CellsPage extends ScrollView {
         arfcn.setText(serving == null ? "—" : number(serving.arfcn));
         pci.setText(serving == null ? "—" : number(serving.pci));
         band.setText(serving == null ? "—" : serving.bandLabel());
+        band.setMaxLines(serving != null && serving.band == 0 ? 3 : 1);
+        String notice = serving == null ? "" : serving.bandNotice();
+        bandNotice.setText(notice); bandNotice.setVisibility(notice.isEmpty() ? GONE : VISIBLE);
+        String metrics = serving == null ? "" : serving.signalLabel();
+        if (serving != null) for (String name : new String[]{"带宽", "SCS"}) {
+            String valueText = serving.details.get(name);
+            if (valueText != null) metrics += (metrics.isEmpty() ? "" : " · ") + name + " " + valueText;
+        }
+        serviceMetrics.setText(metrics); serviceMetrics.setVisibility(metrics.isEmpty() ? GONE : VISIBLE);
         Ui.enable(targetButton, !disposed && !busy && serving != null && serving.hasTarget(serving));
     }
 
@@ -362,7 +377,7 @@ final class CellsPage extends ScrollView {
         identity.addView(identityTitle);
         ui.gap(identity, 4);
         identity.addView(ui.text("频点 " + number(cell.arfcn)
-                + (cell.registered&&cell.mapped ? " · 已注册" : cell.band > 0 ? " · " + cell.bandLabel() : ""), 11, Ui.MUTED));
+                + (cell.registered&&cell.mapped ? " · 已注册" : !cell.bandLabel().equals("—") ? " · " + cell.bandLabel() : ""), 11, Ui.MUTED));
         String metrics = cell.signalLabel();
         if(!metrics.isEmpty())identity.addView(ui.text(metrics,10,Ui.MUTED));
         String source = cell.source.replace(" · SIM 归属未知", "");
@@ -435,7 +450,8 @@ final class CellsPage extends ScrollView {
     }
 
     private void recordSignal() {
-        if (serving == null || !serving.mapped || serving.timestamp<=0 || !serving.hasSignal()) {
+        if (serving == null || !serving.mapped || serving.timestamp<=0 || !serving.hasSignal()
+                || serving.details.containsKey("信号来源")) {
             history.markGap();
             cached = false;
         } else {

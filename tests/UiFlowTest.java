@@ -100,13 +100,22 @@ public final class UiFlowTest extends Instrumentation {
         for(long time:new long[]{SystemClock.elapsedRealtime()-120_000,SystemClock.elapsedRealtime()+60_000}) {
             RadioCell invalid=RadioCell.parse(n77.json().put("timestamp",time),"Root 电话");
             check(!candidate.hasTarget(invalid),"invalid service measurement cannot authorize DIAG target");
-            check(candidate.withServingBand(invalid).band==78,"invalid service measurement cannot infer n77");
+            check(candidate.withServingBand(invalid).band==0,"invalid service measurement cannot resolve n77");
             check(!invalid.hasTarget(invalid)&&!invalid.hasTarget(n77),"invalid phone target cannot use reception fallback");
             page.setServingCell(invalid);page.fillTarget(candidate);
             check(cell.selected()==1,"invalid DIAG target cannot open NR lock form");
         }
         page.setServingCell(n77);page.fillTarget(candidate);
         check(cell.selected()==0&&UiFlowTest.<TextView>field(page,"nrBand").getText().toString().equals("77"),"fresh service still fills n77 target");
+        RadioCell wrong=RadioCell.parse(nr.json().put("band",41),"Root 电话");
+        RadioCell corrected=wrong.withRfBand(28);
+        RadioCell correctedNeighbor=RadioCell.measured(true,false,154570,78,-110,"DIAG NR").withServingBand(corrected);
+        page.setServingCell(corrected);page.fillTarget(correctedNeighbor);
+        command(page,host,"cellApply","cell-nr","154570","78","28","15");
+        check(corrected.bandLabel().equals("n28（校正）")&&correctedNeighbor.hasTarget(corrected),"corrected band used by neighbor lock command");
+        RadioCell ambiguous=RadioCell.parse(n77.json().put("band",28),"Root 电话");
+        page.setServingCell(ambiguous);page.fillTarget(candidate);
+        check(UiFlowTest.<TextView>field(page,"nrBand").getText().length()==0&&UiFlowTest.<TextView>field(page,"nrHint").getText().toString().contains("n77 / n78"),"ambiguous band opens manual confirmation without defaulting n78");
         RadioCell nas=RadioCell.measured(true,true,640000,1,-98,"QMI NAS");
         check(candidate.hasTarget(nas),"untimestamped NAS service still supports fresh candidates");
         check(!candidate.hasTarget(nas.withReceivedAt(SystemClock.elapsedRealtime()-15_000)),"expired NAS reference cannot authorize target");
@@ -132,6 +141,12 @@ public final class UiFlowTest extends Instrumentation {
                 }
                 check(labels.stream().anyMatch(t->t.getText().toString().equals("DIAG NR"))&&labels.stream().anyMatch(t->t.getText().toString().equals("RSRQ -12 dB")),"source and quality retained");
                 check(labels.stream().noneMatch(t->t.getText().toString().matches(".*(SIM 归属未知|同频候选|连接角色|频段来源|TAC|NCI|Root 电话).*")),"metadata hidden from cards");
+                display.invoke(cells,new RadioReader.Observation(List.of(corrected,correctedNeighbor),"QMI 校正",false));layout(cells,scaledUi.dp(320));
+                TextView correctedLabel=field(cells,"band"),notice=field(cells,"bandNotice");
+                check(correctedLabel.getText().toString().equals("n28（校正）")&&notice.getText().toString().contains("系统原报 n41"),"correction and original report visible");
+                check(correctedLabel.getPaint().measureText(correctedLabel.getText().toString())<=correctedLabel.getWidth(),"corrected band clipped at scale "+scale);
+                check(UiFlowTest.<Map<View,RadioCell>>field(cells,"targetViews").size()==1,"corrected neighbor remains clickable");
+                display.invoke(cells,new RadioReader.Observation(List.of(nr,neighbor,phoneNeighbor),"Root 电话观测",false));layout(cells,scaledUi.dp(320));
                 Map<View,RadioCell> targets=field(cells,"targetViews");
                 View phoneRow=targets.entrySet().stream().filter(e->e.getValue()==phoneNeighbor).findFirst().orElseThrow().getKey();
                 check(phoneRow.isEnabled()&&!phoneRow.getContentDescription().toString().contains("Root 电话"),"fresh phone neighbor enabled without source announcement");

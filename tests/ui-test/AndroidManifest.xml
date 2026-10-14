@@ -2,4 +2,5 @@
     <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="34" />
     <application android:label="CellLock UI checks" />
     <instrumentation android:name="com.celllock.app.UiFlowTest" android:targetPackage="com.celllock.app" />
+    <instrumentation android:name="com.celllock.app.DeviceReadingTest" android:targetPackage="com.celllock.app" />
 </manifest>

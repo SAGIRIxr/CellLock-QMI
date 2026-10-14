@@ -6,6 +6,8 @@
 #include <assert.h>
 
 int main(void) {
+    assert(allowed(3,0x31) && allowed(3,0x4d) && allowed(3,0x4f));
+    assert(!allowed(3,0x33) && !allowed(3,0x10e) && !allowed(3,0xd8));
     uint8_t lte[29], nr[22], uim[14] = {1,2,0,0,0,1,0,0,0,1,3,0x12,0x34,0x56};
     memset(lte, 0x12, sizeof lte); memset(nr, 0x34, sizeof nr);
     redact(3, 0x43, 0x13, lte, sizeof lte);

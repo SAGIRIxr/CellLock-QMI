@@ -7,7 +7,6 @@ import android.telephony.CellInfoLte;
 import android.telephony.CellInfoNr;
 import android.telephony.CellSignalStrengthNr;
 import java.util.Collections;
-import java.util.BitSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Locale;
@@ -22,7 +21,8 @@ final class RadioCell {
     final boolean mapped;
     final Map<String, String> details;
     private static final String[] DETAIL_NAMES = {"RSRQ", "SINR", "RSSNR", "SNR", "RSSI", "CSI-RSRP", "CSI-RSRQ", "CSI-SINR",
-            "TAC", "MCC", "MNC", "PLMN", "运营商", "连接角色", "频段", "频段来源", "带宽", "SRXLEV"};
+            "TAC", "MCC", "MNC", "PLMN", "运营商", "连接角色", "频段", "频段来源", "带宽", "SRXLEV",
+            "原报频段", "候选频段", "射频频段", "SCS", "补充来源", "信号来源"};
 
     private RadioCell(boolean nr, boolean registered, int arfcn, int pci, int band, int rsrp, int level,
                       long timestamp, long identity) {
@@ -42,7 +42,19 @@ final class RadioCell {
         this.registered = registered;
         this.arfcn = available(arfcn, 0, nr ? InputValidator.MAX_NR_ARFCN : 262143);
         this.pci = available(pci, 0, nr ? 1007 : 503);
-        this.band = band > 0 && band <= 512 ? band : 0;
+        int effective = band > 0 && band <= 512 ? band : 0;
+        Map<String, String> values = new LinkedHashMap<>(details);
+        if (nr && this.arfcn != CellInfo.UNAVAILABLE) {
+            if (effective > 0 && Bands.knownNrBand(effective) && !Bands.nrCandidates(this.arfcn).get(effective)) {
+                values.putIfAbsent("原报频段", "n" + effective);
+                values.put("频段来源", "频点校正");
+                effective = Bands.uniqueNrBand(this.arfcn);
+                values.put("频段", effective > 0 ? String.valueOf(effective) : Bands.nrCandidateLabel(this.arfcn));
+            } else if (effective == 0) effective = Bands.uniqueNrBand(this.arfcn);
+            if (effective == 0) values.put("候选频段", Bands.nrCandidateLabel(this.arfcn));
+            else values.remove("候选频段");
+        }
+        this.band = effective;
         this.rsrp = SignalHistory.validSignal(rsrp) ? rsrp : CellInfo.UNAVAILABLE;
         this.level = this.rsrp == CellInfo.UNAVAILABLE ? 0 : Math.max(0, Math.min(4, level));
         this.timestamp = timestamp;
@@ -50,7 +62,7 @@ final class RadioCell {
         this.source = source;
         this.mapped = mapped;
         this.receivedAt = receivedAt;
-        this.details = Collections.unmodifiableMap(new LinkedHashMap<>(details));
+        this.details = Collections.unmodifiableMap(values);
     }
 
     static RadioCell from(CellInfo info) {
@@ -75,7 +87,7 @@ final class RadioCell {
             CellIdentityNr id = (CellIdentityNr) nr.getCellIdentity();
             CellSignalStrengthNr signal = (CellSignalStrengthNr) nr.getCellSignalStrength();
             int[] bands = id.getBands();
-            int band = bands.length > 0 ? bands[0] : Bands.nrBandForArfcn(id.getNrarfcn(), null);
+            int band = bands.length > 0 ? bands[0] : Bands.uniqueNrBand(id.getNrarfcn());
             Map<String, String> details = new LinkedHashMap<>();
             metric(details, "RSRQ", signal.getSsRsrq(), -43, 20, 1, "dB");
             metric(details, "SINR", signal.getSsSinr(), -23, 40, 1, "dB");
@@ -105,16 +117,15 @@ final class RadioCell {
         if (!validIdentity(nr, arfcn, pci) || !nr && arfcn > InputValidator.MAX_EARFCN) return false;
         if (hasTarget()) return true;
         return recentMeasurement() && serving != null && serving.registered && serving.recentMeasurement()
-                && nr == serving.nr && serving.band > 0 && targetBand(serving) == serving.band && arfcn == serving.arfcn;
+                && nr == serving.nr && (serving.band > 0 || nr && !Bands.nrCandidates(arfcn).isEmpty())
+                && targetBand(serving) == serving.band && arfcn == serving.arfcn;
     }
 
     int targetBand(RadioCell serving) {
-        if (!nr || "系统".equals(details.get("频段来源")) || serving == null || !serving.nr
+        if (!nr || "系统".equals(details.get("频段来源")) || "基带校正".equals(details.get("频段来源"))
+                || "基带".equals(details.get("频段来源")) || serving == null || !serving.nr
                 || !serving.registered || !serving.recentMeasurement() || serving.band <= 0 || arfcn != serving.arfcn) return band;
-        BitSet preferred = new BitSet();
-        preferred.set(serving.band);
-        int matched = Bands.nrBandForArfcn(arfcn, preferred);
-        return matched == serving.band ? matched : band;
+        return Bands.nrCandidates(arfcn).get(serving.band) ? serving.band : band;
     }
 
     RadioCell withServingBand(RadioCell serving) {
@@ -178,7 +189,7 @@ final class RadioCell {
         int signal = SignalHistory.validSignal(rsrp) ? rsrp : CellInfo.UNAVAILABLE;
         int level = signal == CellInfo.UNAVAILABLE ? 0 : signal >= -85 ? 4 : signal >= -95 ? 3 : signal >= -105 ? 2 : 1;
         return new RadioCell(nr, registered, arfcn, pci,
-                nr ? Bands.nrBandForArfcn(arfcn, null) : Bands.lteBandForEarfcn(arfcn),
+                nr ? Bands.uniqueNrBand(arfcn) : Bands.lteBandForEarfcn(arfcn),
                 signal, level, 0, -1, source, false);
     }
 
@@ -208,10 +219,76 @@ final class RadioCell {
     }
 
     RadioCell withReceivedAt(long time) { return copy(source, mapped, time, details); }
-    RadioCell withDetails(Map<String, String> values) { return copy(source, mapped, receivedAt, values); }
+    RadioCell withDetails(Map<String, String> values) {
+        if (details.containsKey("原报频段")) {
+            values = new LinkedHashMap<>(values);
+            values.put("原报频段", details.get("原报频段"));
+            values.put("频段来源", details.get("频段来源"));
+            values.put("频段", band > 0 ? String.valueOf(band) : Bands.nrCandidateLabel(arfcn));
+        }
+        return copy(source, mapped, receivedAt, values);
+    }
     RadioCell withIdentity(long value) {
         return new RadioCell(nr, registered, arfcn, pci, band, rsrp, level, timestamp, value,
                 source, mapped, receivedAt, details);
+    }
+
+    RadioCell withRfBand(int value) {
+        if (!nr || value <= 0 || !Bands.nrCandidates(arfcn).get(value)) return this;
+        Map<String, String> values = new LinkedHashMap<>(details);
+        values.put("射频频段", "n" + value);
+        if (band > 0 && !values.containsKey("原报频段") && "系统".equals(values.get("频段来源"))) return withDetails(values);
+        values.put("频段来源", values.containsKey("原报频段") ? "基带校正" : "基带");
+        values.put("频段", String.valueOf(value));
+        return new RadioCell(nr, registered, arfcn, pci, value, rsrp, level, timestamp, identity,
+                source, mapped, receivedAt, values);
+    }
+
+    RadioCell supplement(RadioCell next) {
+        if (!registered || !next.registered || nr != next.nr || arfcn != next.arfcn
+                || !recentMeasurement() || !next.recentMeasurement()
+                || identity >= 0 && next.identity >= 0 && identity != next.identity
+                || pci != CellInfo.UNAVAILABLE && next.pci != CellInfo.UNAVAILABLE && pci != next.pci
+                || details.containsKey("TAC") && next.details.containsKey("TAC") && !details.get("TAC").equals(next.details.get("TAC"))
+                || !(pci != CellInfo.UNAVAILABLE && pci == next.pci || identity >= 0 && identity == next.identity)) return this;
+        Map<String, String> values = new LinkedHashMap<>(details);
+        for (Map.Entry<String, String> field : next.details.entrySet())
+            if (!field.getKey().equals("频段来源") && !field.getKey().equals("候选频段")
+                    && !(hasSignal() && field.getKey().equals("信号来源"))) values.putIfAbsent(field.getKey(), field.getValue());
+        values.put("补充来源", next.source);
+        int signal = hasSignal() ? rsrp : next.rsrp;
+        // 新读到的 QMI 信号没有测量时间，不能借用旧 CellInfo 时间绘制趋势。
+        if (!hasSignal() && next.hasSignal()) values.put("信号来源", next.source + " · 测量时间未知");
+        RadioCell result = new RadioCell(nr, registered, arfcn,
+                pci == CellInfo.UNAVAILABLE ? next.pci : pci, band, signal,
+                hasSignal() ? level : next.level, timestamp, identity >= 0 ? identity : next.identity,
+                source, mapped, receivedAt, values);
+        if ("基带".equals(next.details.get("频段来源")) || "基带校正".equals(next.details.get("频段来源")))
+            result = result.withRfBand(next.band);
+        return result;
+    }
+
+    RadioCell withSignal(int value, Map<String, String> extras) {
+        Map<String, String> values = new LinkedHashMap<>(details);
+        for (Map.Entry<String, String> field : extras.entrySet()) values.putIfAbsent(field.getKey(), field.getValue());
+        boolean supplied = !hasSignal() && SignalHistory.validSignal(value);
+        if (supplied) values.put("信号来源", "QMI SIG · 测量时间未知");
+        return new RadioCell(nr, registered, arfcn, pci, band, supplied ? value : rsrp,
+                supplied ? value >= -85 ? 4 : value >= -95 ? 3 : value >= -105 ? 2 : 1 : level,
+                timestamp, identity, source, mapped, receivedAt, values);
+    }
+
+    RadioCell withRegistered(boolean value) {
+        return new RadioCell(nr, value, arfcn, pci, band, rsrp, level, timestamp, identity,
+                source, mapped, receivedAt, details);
+    }
+
+    String bandNotice() {
+        String original = details.get("原报频段");
+        if (band == 0 && details.containsKey("候选频段")) return "频段尚未确认，请在锁定时手动选择。";
+        if (original == null) return "";
+        return "系统原报 " + original + ("基带校正".equals(details.get("频段来源"))
+                ? "，已由基带信息校正。" : "，已按频点校正。");
     }
     private RadioCell copy(String source, boolean mapped, long time, Map<String, String> values) {
         return new RadioCell(nr, registered, arfcn, pci, band, rsrp, level, timestamp, identity, source, mapped, time, values);
@@ -247,6 +324,12 @@ final class RadioCell {
     }
 
     String bandLabel() {
-        return band <= 0 ? "—" : (nr ? "n" : "B") + band;
+        if (band <= 0) {
+            String candidates = details.get("候选频段");
+            return candidates == null || candidates.isEmpty() ? "—" : candidates;
+        }
+        String provenance = details.get("频段来源");
+        return (nr ? "n" : "B") + band + ("基带校正".equals(provenance) ? "（校正）"
+                : "频点校正".equals(provenance) ? "（推算）" : "");
     }
 }
