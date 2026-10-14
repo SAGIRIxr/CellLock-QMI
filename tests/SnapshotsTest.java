@@ -8,7 +8,7 @@ import java.util.Arrays;
 import java.util.BitSet;
 import java.util.List;
 
-/** Android runtime only; creates JSON and commands in memory and never executes them. */
+/** JSON runtime required; creates commands in memory and never executes them. */
 public final class SnapshotsTest {
     private static int checks;
     private static final List<String> failures = new ArrayList<>();

@@ -129,8 +129,9 @@ final class DevicePage extends ScrollView {
         nrBands.setText(hardwareBands(state == null ? null : state.hwNr, state != null && state.hwKnown, "n"));
         readButton.setText(busy ? "读取中" : "读取");
         Ui.enable(readButton, !busy);
-        permission(phonePermission, simStatus == SimStatus.AVAILABLE || simStatus == SimStatus.NONE,
-                "已授予", simStatus.permissionLabel);
+        boolean phoneGranted = activity.checkSelfPermission(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED;
+        permission(phonePermission, phoneGranted && simStatus != SimStatus.RESTRICTED,
+                "已授予", !phoneGranted && simStatus == SimStatus.AVAILABLE ? "未授予 · Root 可读取" : simStatus.permissionLabel);
         permission(locationPermission, activity.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
                 == PackageManager.PERMISSION_GRANTED, "已授予", "未授予");
         LocationManager location = activity.getSystemService(LocationManager.class);

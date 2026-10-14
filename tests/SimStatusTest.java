@@ -18,6 +18,7 @@ public final class SimStatusTest {
         check(SimStatus.resolve(false, false, true, false) == SimStatus.PERMISSION_REQUIRED, "未授权时先引导授权");
         check(SimStatus.resolve(true, false, false, false) == SimStatus.NONE, "确实无卡时保留无卡提示");
         check(SimStatus.resolve(true, true, true, false) == SimStatus.AVAILABLE, "真实订阅可用时正常选择 SIM");
+        check(SimStatus.resolve(false, true, true, false) == SimStatus.AVAILABLE, "Root 真实订阅不依赖主 App 电话授权");
         System.out.println("SimStatus: " + checks + " checks passed");
     }
 }

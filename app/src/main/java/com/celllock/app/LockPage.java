@@ -142,10 +142,11 @@ final class LockPage extends ScrollView {
     void setServingCell(RadioCell cell) {serving=cell;updateEnabled();}
 
     void fillTarget(RadioCell cell) {
-        if(busy||cell==null||!cell.hasTarget())return;
+        if(busy||cell==null||!cell.hasTarget(serving))return;
         sectionTabs.select(0);cellTabs.select(cell.nr?1:0);changingFields=true;
-        if(cell.nr){nrKindTabs.select(0);nrArfcn.setText(String.valueOf(cell.arfcn));nrPci.setText(String.valueOf(cell.pci));int band=cell.band>0?cell.band:Bands.nrBandForArfcn(cell.arfcn,state==null?null:state.hwNr);nrBand.setText(band>0?String.valueOf(band):"");if(band>0)selectScs(Bands.defaultScs(band));nrHint.setText(band>0?"已带入 n"+band+"，子载波间隔仍可调整。":"请确认频段与子载波间隔。");}
+        if(cell.nr){nrKindTabs.select(0);nrArfcn.setText(String.valueOf(cell.arfcn));nrPci.setText(String.valueOf(cell.pci));int band=cell.targetBand(serving);if(band<=0)band=Bands.nrBandForArfcn(cell.arfcn,state==null?null:state.hwNr);nrBand.setText(band>0?String.valueOf(band):"");if(band>0)selectScs(Bands.defaultScs(band));nrHint.setText(band>0?"已带入 n"+band+"，子载波间隔仍可调整。":"请确认频段与子载波间隔。");}
         else{lteArfcn.setText(String.valueOf(cell.arfcn));ltePci.setText(String.valueOf(cell.pci));}
+        if(cell.nr&&!cell.mapped)nrHint.setText("已填入所选 SIM 的同频候选，请确认频段与子载波间隔。");
         changingFields=false;showSection();updateCellUi();smoothScrollTo(0,0);
     }
 

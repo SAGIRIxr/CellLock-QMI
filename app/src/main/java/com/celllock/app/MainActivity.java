@@ -14,7 +14,6 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
-import android.telephony.SubscriptionInfo;
 import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyManager;
 import android.view.Gravity;
@@ -51,7 +50,9 @@ public final class MainActivity extends Activity {
     private static final Session SESSION=new Session();
     private static final String[] TITLES={"小区","锁定","设备"};
     private static final String[] SUBTITLES={"看清连接，选择目标。","小区、频段与网络制式。","设备状态与操作记录。"};
-    private final ArrayList<SubscriptionInfo> subscriptions=new ArrayList<>();
+    private final ArrayList<SimInfo> subscriptions=new ArrayList<>();
+    private RadioReader reader;
+    private int selectedSlot=-1;
     private final LinearLayout[] navigation=new LinearLayout[3];
     private final TextView[] navLabels=new TextView[3];
     private final LineIcon[] navIcons=new LineIcon[3];
@@ -74,12 +75,11 @@ public final class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
-        ui=new Ui(this);prefs=getSharedPreferences("celllock",MODE_PRIVATE);
-        if(saved!=null){subscriptionId=saved.getInt("main.sim",SubscriptionManager.INVALID_SUBSCRIPTION_ID);selectedPage=Math.max(0,Math.min(2,saved.getInt("main.page")));exportText=saved.getString("main.export","");consumed=SESSION.alive()?Math.max(saved.getLong("main.consumed",-1),SESSION.deliveredId()):-1;SESSION.restoreLogs(saved.getStringArrayList("main.logs"));}
+        ui=new Ui(this);prefs=getSharedPreferences("celllock",MODE_PRIVATE);reader=new RadioReader(this);
+        if(saved!=null){subscriptionId=saved.getInt("main.sim",SubscriptionManager.INVALID_SUBSCRIPTION_ID);selectedSlot=saved.getInt("main.slot",-1);selectedPage=Math.max(0,Math.min(2,saved.getInt("main.page")));exportText=saved.getString("main.export","");consumed=SESSION.alive()?Math.max(saved.getLong("main.consumed",-1),SESSION.deliveredId()):-1;SESSION.restoreLogs(saved.getStringArrayList("main.logs"));}
         else consumed=SESSION.deliveredId();
         if(saved!=null){messageVisible=saved.getBoolean("main.messageVisible");messageTitle=saved.getString("main.messageTitle","");messageBody=saved.getString("main.messageBody","");}
         buildUi();ready=true;
-        cells.setSubscription(subscriptionId);
         if(saved!=null){cells.restore(saved);locks.restore(saved);device.post(()->device.scrollTo(0,saved.getInt("main.deviceScroll")));}
         if(saved!=null&&saved.getBoolean("main.wasBusy")&&!SESSION.alive())SESSION.log("应用进程已重建，上次操作结果未知，请重新读取确认。");
         SESSION.attach(this);loadSubscriptions();refreshUi();showPage(selectedPage);
@@ -95,7 +95,7 @@ public final class MainActivity extends Activity {
         simSpinner=ui.spinner(new String[]{"授权后选择 SIM"});simSpinner.setContentDescription("选择操作的 SIM 卡");sim.addView(simSpinner,ui.weight(46));header.addView(sim,ui.fill(-2));root.addView(header);
         simSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){
             public void onNothingSelected(AdapterView<?> parent){}
-            public void onItemSelected(AdapterView<?> parent,View view,int index,long id){if(!ready||SESSION.running()||index<0||index>=subscriptions.size())return;int next=subscriptions.get(index).getSubscriptionId();if(next!=subscriptionId)selectSubscription(next);}
+            public void onItemSelected(AdapterView<?> parent,View view,int index,long id){if(!ready||SESSION.running()||index<0||index>=subscriptions.size())return;SimInfo next=subscriptions.get(index);if(next.subscriptionId!=subscriptionId||next.slot!=selectedSlot)selectSim(next);}
         });
         FrameLayout pageHost=new FrameLayout(this);root.addView(pageHost,new LinearLayout.LayoutParams(-1,0,1));
         locks=new LockPage(this,ui,new LockPage.Host(){
@@ -104,14 +104,15 @@ public final class MainActivity extends Activity {
             public void onRestore(){chooseRestore();}
             public void onMessage(String title,String message){showMessage(title,message);}
         });
-        cells=new CellsPage(this,ui,new CellsPage.Host(){
+        cells=new CellsPage(this,ui,reader,new CellsPage.Host(){
             public void onTarget(RadioCell cell){if(!SESSION.running()){locks.fillTarget(cell);showPage(1);}}
-            public void onNeedPermission(){requestPermissionsManually();}
+            public void onNeedPermission(){requestPermissionsManually(true);}
+            public void onSimChanged(){loadSubscriptions();}
             public void onServingChanged(RadioCell cell){locks.setServingCell(cell);}
         });
         device=new DevicePage(this,ui,new DevicePage.Host(){
             public void onReadState(){readState(true);}
-            public void onPermissions(){requestPermissionsManually();}
+            public void onPermissions(){requestPermissionsManually(true);}
             public void onLocation(){startActivity(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS));}
             public void onExport(){exportLogs();}
             public void onClearLogs(){if(!SESSION.running()){SESSION.clearLogs();refreshUi();}}
@@ -128,24 +129,28 @@ public final class MainActivity extends Activity {
         selectedPage=page;pageTitle.setText(TITLES[page]);pageSubtitle.setText(SUBTITLES[page]);
         for(int i=0;i<3;i++){boolean selected=i==page;pages[i].setVisibility(selected?View.VISIBLE:View.GONE);navigation[i].setBackground(ui.shape(selected?Ui.SOFT_GREEN:Ui.CARD,16,0));navLabels[i].setTextColor(selected?Ui.GREEN:Ui.MUTED);navIcons[i].setColor(selected?Ui.GREEN:Ui.MUTED);}
         View focus=getCurrentFocus();if(focus!=null){InputMethodManager keyboard=getSystemService(InputMethodManager.class);if(keyboard!=null)keyboard.hideSoftInputFromWindow(focus.getWindowToken(),0);focus.clearFocus();}
+        cells.setForeground(resumed&&page==0);
         maybeReadInitialState();
     }
 
     private boolean phonePermission(){return checkSelfPermission(Manifest.permission.READ_PHONE_STATE)==PackageManager.PERMISSION_GRANTED;}
     private void loadSubscriptions() {
         if(!ready)return;
-        boolean phone=phonePermission(),denied=false;
-        List<SubscriptionInfo> active=null;
-        if(phone)try{SubscriptionManager manager=getSystemService(SubscriptionManager.class);if(manager!=null)active=manager.getActiveSubscriptionInfoList();}catch(SecurityException error){denied=true;}
-        int previous=subscriptionId;subscriptions.clear();if(active!=null)subscriptions.addAll(active);
-        SimStatus nextStatus=SimStatus.resolve(phone,!subscriptions.isEmpty(),phone&&subscriptions.isEmpty()&&hasReadySim(),denied);
-        if(nextStatus==SimStatus.RESTRICTED&&simStatus!=nextStatus)SESSION.log("SIM 信息读取受限，请在系统权限设置允许获取真实电话信息，并关闭空白授权。");
-        simStatus=nextStatus;
-        ArrayList<String> labels=new ArrayList<>();int position=0;for(int i=0;i<subscriptions.size();i++){SubscriptionInfo info=subscriptions.get(i);labels.add("SIM "+(info.getSimSlotIndex()+1)+"  ·  "+info.getCarrierName());if(info.getSubscriptionId()==previous)position=i;}
-        int next=subscriptions.isEmpty()?SubscriptionManager.INVALID_SUBSCRIPTION_ID:subscriptions.get(position).getSubscriptionId();
-        if(labels.isEmpty())labels.add(simStatus.emptyLabel);
-        simSpinner.setAdapter(ui.adapter(labels.toArray(new String[0])));simSpinner.setSelection(position);
-        if(next!=previous)selectSubscription(next);else refreshUi();
+        reader.loadSims(active->{
+            if(isDestroyed())return;
+            int previous=subscriptionId,previousSlot=selectedSlot;subscriptions.clear();subscriptions.addAll(active);
+            boolean trusted=active.stream().anyMatch(SimInfo::trusted);
+            simStatus=SimStatus.resolve(phonePermission(),trusted,hasReadySim(),!active.isEmpty()&&!trusted);
+            ArrayList<String> labels=new ArrayList<>();int position=0;
+            for(int i=0;i<active.size();i++){SimInfo info=active.get(i);labels.add(info.label+(info.source.equals("系统")?"":" · "+info.source));if(info.slot==previousSlot&&(previous<0||info.subscriptionId==previous))position=i;}
+            SimInfo next=active.isEmpty()?null:active.get(position);
+            if(labels.isEmpty())labels.add(simStatus.emptyLabel);
+            ready=false;simSpinner.setAdapter(ui.adapter(labels.toArray(new String[0])));simSpinner.setSelection(position);ready=true;
+            if(next==null){if(subscriptionId!=-1||selectedSlot!=-1)selectSim(null);else{cells.setSim(null);refreshUi();}}
+            else if(next.subscriptionId!=previous||next.slot!=previousSlot)selectSim(next);
+            else{cells.setSim(next);refreshUi();}
+            maybeReadInitialState();
+        });
     }
 
     private boolean hasReadySim() {
@@ -156,18 +161,20 @@ public final class MainActivity extends Activity {
         return false;
     }
 
-    private void selectSubscription(int next) {
-        subscriptionId=next;locks.resetForSubscription();cells.setSubscription(next);refreshUi();
-        if(SubscriptionManager.isValidSubscriptionId(next))SESSION.log("已选择 "+simName(next)+"。");
+    private void selectSim(SimInfo next) {
+        subscriptionId=next==null?-1:next.subscriptionId;selectedSlot=next==null?-1:next.slot;
+        locks.resetForSubscription();cells.setSim(next);refreshUi();
+        if(next!=null)SESSION.log("已选择 "+next.label+"（"+next.source+"）。");
         maybeReadInitialState();
     }
 
-    private String simName(int sub) {for(SubscriptionInfo info:subscriptions)if(info.getSubscriptionId()==sub)return "SIM "+(info.getSimSlotIndex()+1)+" · "+info.getCarrierName();return "订阅 "+sub;}
-    private void maybeReadInitialState(){if(ready&&resumed&&selectedPage==1&&!SESSION.running()&&phonePermission()&&SubscriptionManager.isValidSubscriptionId(subscriptionId)&&!SESSION.attempted(subscriptionId))readState(false);}
+    private boolean trustedSim(){return subscriptions.stream().anyMatch(s->s.subscriptionId==subscriptionId&&s.slot==selectedSlot&&s.trusted());}
+    private String simName(int sub) {for(SimInfo info:subscriptions)if(info.subscriptionId==sub&&info.slot==selectedSlot)return info.label;return "订阅 "+sub;}
+    private void maybeReadInitialState(){if(ready&&resumed&&selectedPage==1&&!SESSION.running()&&trustedSim()&&!SESSION.attempted(subscriptionId))readState(false);}
 
     private void readState(boolean manual) {
         if(SESSION.running())return;
-        if(!phonePermission()||simStatus==SimStatus.RESTRICTED){if(manual)requestPermissionsManually();return;}
+        if(!trustedSim()){if(manual)requestPermissionsManually(false);return;}
         if(!SubscriptionManager.isValidSubscriptionId(subscriptionId)){if(manual)toast("请先选择可用 SIM");return;}
         try{int slot=Backend.slotOf(this,subscriptionId);Task task=new Task(subscriptionId,slot,simName(subscriptionId),"读取设置",new ArrayList<>(),null);if(SESSION.start(getApplicationContext(),task))refreshUi();}
         catch(Exception error){if(manual)showMessage("无法读取",message(error));}
@@ -175,10 +182,10 @@ public final class MainActivity extends Activity {
 
     private void confirmApply(String title,String summary,List<String[]> commands,String restoreSnapshot) {
         if(SESSION.running())return;
-        if(!phonePermission()||simStatus==SimStatus.RESTRICTED){requestPermissionsManually();return;}
+        if(!trustedSim()){requestPermissionsManually(false);return;}
         final int sub=subscriptionId;final int slot;
         try{slot=Backend.slotOf(this,sub);}catch(Exception error){showMessage("无法确定 SIM",message(error));return;}
-        final Task task=new Task(sub,slot,simName(sub),title,copyCommands(commands),restoreSnapshot);
+        final Task task=new Task(sub,slot,simName(sub),title,commands,restoreSnapshot);
         if(task.commands.isEmpty()){showMessage("没有可执行的设置","请重新选择参数。");return;}
         String explanation=task.target+"\n\n"+summary+"\n\n可能短暂断网；离开目标覆盖区前记得恢复。";
         new AlertDialog.Builder(this).setTitle(title).setMessage(explanation).setNegativeButton("取消",null).setPositiveButton("确认",(dialog,which)->{
@@ -190,7 +197,7 @@ public final class MainActivity extends Activity {
 
     private void chooseRestore() {
         if(SESSION.running())return;
-        if(!phonePermission()||simStatus==SimStatus.RESTRICTED){requestPermissionsManually();return;}
+        if(!trustedSim()){requestPermissionsManually(false);return;}
         final int sub=subscriptionId;final int slot;
         try{slot=Backend.slotOf(this,sub);}catch(Exception error){showMessage("无法恢复",message(error));return;}
         new AlertDialog.Builder(this).setTitle("恢复设置").setItems(new String[]{"恢复初始频段与制式，并清除小区锁","全部开放，并清除小区锁"},(dialog,which)->{
@@ -217,26 +224,33 @@ public final class MainActivity extends Activity {
         maybeReadInitialState();
     }
 
-    private void requestPermissionsManually() {
-        boolean phone=phonePermission(),fine=checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==PackageManager.PERMISSION_GRANTED;
-        if(phone&&fine){
-            loadSubscriptions();
-            if(simStatus==SimStatus.RESTRICTED){toast("请允许获取真实电话信息，并关闭空白授权");openPermissionSettings();return;}
-            if(simStatus==SimStatus.NONE){toast("没有可用的 SIM 卡，请检查插卡和启用状态");return;}
-            refreshUi();cells.refresh();return;
+    private void requestPermissionsManually(boolean measurement) {
+        ArrayList<String> needed=new ArrayList<>();
+        if(!trustedSim()&&!phonePermission())needed.add(Manifest.permission.READ_PHONE_STATE);
+        boolean fine=checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==PackageManager.PERMISSION_GRANTED;
+        if(measurement&&!reader.rootMeasurements()&&!fine){needed.add(Manifest.permission.ACCESS_COARSE_LOCATION);needed.add(Manifest.permission.ACCESS_FINE_LOCATION);}
+        if(needed.isEmpty()){
+            if(!trustedSim()&&simStatus==SimStatus.RESTRICTED){toast("真实订阅读取受限，当前观测不能用于锁定");openPermissionSettings();return;}
+            android.location.LocationManager location=getSystemService(android.location.LocationManager.class);
+            if(measurement&&!reader.rootMeasurements()&&location!=null&&!location.isLocationEnabled()){toast("系统小区接口需要开启定位；Root 来源当前不可用");startActivity(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS));return;}
+            loadSubscriptions();return;
         }
-        boolean asked=prefs.getBoolean("permissionsAsked",false);
-        if(asked&&((!phone&&!shouldShowRequestPermissionRationale(Manifest.permission.READ_PHONE_STATE))||(!fine&&!shouldShowRequestPermissionRationale(Manifest.permission.ACCESS_FINE_LOCATION)))){openPermissionSettings();return;}
-        prefs.edit().putBoolean("permissionsAsked",true).apply();requestPermissions(new String[]{Manifest.permission.READ_PHONE_STATE,Manifest.permission.ACCESS_COARSE_LOCATION,Manifest.permission.ACCESS_FINE_LOCATION},REQUEST_PERMISSIONS);
+        for(String permission:needed)if(needsPermissionSettings(prefs,permission,checkSelfPermission(permission)==PackageManager.PERMISSION_GRANTED,shouldShowRequestPermissionRationale(permission))){openPermissionSettings();return;}
+        SharedPreferences.Editor editor=prefs.edit().remove("permissionsAsked");
+        for(String permission:needed)editor.putBoolean("permissionAsked:"+permission,true);
+        editor.apply();requestPermissions(needed.toArray(new String[0]),REQUEST_PERMISSIONS);
+    }
+    static boolean needsPermissionSettings(SharedPreferences prefs,String permission,boolean granted,boolean rationale) {
+        return !granted&&prefs.getBoolean("permissionAsked:"+permission,false)&&!rationale;
     }
     private void openPermissionSettings(){startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,Uri.parse("package:"+getPackageName())));}
-    @Override public void onRequestPermissionsResult(int code,String[] permissions,int[] results){super.onRequestPermissionsResult(code,permissions,results);if(code==REQUEST_PERMISSIONS){loadSubscriptions();refreshUi();cells.setForeground(resumed);maybeReadInitialState();}}
-    @Override protected void onResume(){super.onResume();resumed=true;if(ready){loadSubscriptions();refreshUi();cells.setForeground(true);if(messageVisible&&(messageDialog==null||!messageDialog.isShowing()))showMessage(messageTitle,messageBody);SESSION.deliver();maybeReadInitialState();}}
+    @Override public void onRequestPermissionsResult(int code,String[] permissions,int[] results){super.onRequestPermissionsResult(code,permissions,results);if(code==REQUEST_PERMISSIONS){loadSubscriptions();refreshUi();cells.setForeground(resumed&&selectedPage==0);maybeReadInitialState();}}
+    @Override protected void onResume(){super.onResume();resumed=true;if(ready){loadSubscriptions();refreshUi();cells.setForeground(selectedPage==0);if(messageVisible&&(messageDialog==null||!messageDialog.isShowing()))showMessage(messageTitle,messageBody);SESSION.deliver();maybeReadInitialState();}}
     @Override protected void onPause(){resumed=false;if(cells!=null)cells.setForeground(false);super.onPause();}
-    @Override protected void onDestroy(){if(cells!=null)cells.dispose();if(messageDialog!=null){messageDialog.setOnDismissListener(null);messageDialog.dismiss();messageDialog=null;}SESSION.detach(this);super.onDestroy();}
+    @Override protected void onDestroy(){if(cells!=null)cells.dispose();if(reader!=null)reader.close();if(messageDialog!=null){messageDialog.setOnDismissListener(null);messageDialog.dismiss();messageDialog=null;}SESSION.detach(this);super.onDestroy();}
 
     @Override protected void onSaveInstanceState(Bundle out) {
-        super.onSaveInstanceState(out);out.putInt("main.sim",subscriptionId);out.putInt("main.page",selectedPage);out.putString("main.export",exportText);out.putLong("main.consumed",consumed);out.putBoolean("main.wasBusy",SESSION.running());out.putStringArrayList("main.logs",new ArrayList<>(SESSION.logs()));out.putInt("main.deviceScroll",device.getScrollY());cells.save(out);locks.save(out);
+        super.onSaveInstanceState(out);out.putInt("main.sim",subscriptionId);out.putInt("main.slot",selectedSlot);out.putInt("main.page",selectedPage);out.putString("main.export",exportText);out.putLong("main.consumed",consumed);out.putBoolean("main.wasBusy",SESSION.running());out.putStringArrayList("main.logs",new ArrayList<>(SESSION.logs()));out.putInt("main.deviceScroll",device.getScrollY());cells.save(out);locks.save(out);
         out.putBoolean("main.messageVisible",messageVisible);out.putString("main.messageTitle",messageTitle);out.putString("main.messageBody",messageBody);
     }
     private void exportLogs() {
@@ -306,7 +320,7 @@ public final class MainActivity extends Activity {
             worker.execute(()->execute(app,task,id));return true;
         }
         private void verifySlot(Context context,Task task){
-            try{if(Backend.slotOf(context,task.subscriptionId)==task.slot)return;}catch(Exception ignored){}
+            try{RadioReader.verifySlot(context,task.subscriptionId,task.slot);return;}catch(Exception ignored){}
             synchronized(this){states.remove(task.subscriptionId);}
             throw new IllegalStateException("所选 SIM 的卡槽已改变或无法确认，已停止后续操作。操作结果需重新确认，请重新读取。");
         }

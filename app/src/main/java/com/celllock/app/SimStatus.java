@@ -14,8 +14,8 @@ enum SimStatus {
     }
 
     static SimStatus resolve(boolean phoneGranted, boolean hasSubscriptions, boolean readySim, boolean readDenied) {
-        if (!phoneGranted) return PERMISSION_REQUIRED;
         if (hasSubscriptions) return AVAILABLE;
+        if (!phoneGranted) return PERMISSION_REQUIRED;
         return readySim || readDenied ? RESTRICTED : NONE;
     }
 }

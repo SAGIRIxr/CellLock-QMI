@@ -47,6 +47,6 @@ NR `ackOnly=true` 表示查询只收到成功结果 TLV，没有可解码的锁�
 
 ## 构建与验证
 
-在项目根目录运行 `build-native.ps1 -Ndk <NDK目录> -BuildTests`，或按主 [README](../README.md) 构建 App。`native/test_qmi` 是离线字节编码与状态判定测试，不建立基带连接。旧 DCI 探测组件不是当前界面的后端。
+在项目根目录运行 `build-native.ps1 -Ndk <NDK目录> -BuildTests`，或按主 [README](../README.md) 构建 App。编译统一由 `native/build.ps1` 执行，直接调用仍默认生成探针与测试。`native/test_qmi` 是离线字节编码与状态判定测试；`test_diag` 检查缓冲区，`test_read` 检查 NAS 标识保留与 ICCID 脱敏，三者均不建立基带连接。旧 DCI 探测组件不是当前界面的后端。
 
 0.3 验证进度见 [VALIDATION.md](VALIDATION.md)，旧机与 0.2 证据原样保存在 [VALIDATION-0.2.md](VALIDATION-0.2.md)。5G 小区 / ARFCN 锁定效果尚未实测。协议来源与固定提交由 [SOURCES.md](SOURCES.md) 记录。
