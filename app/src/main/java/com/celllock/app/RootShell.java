@@ -4,6 +4,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
+import org.json.JSONObject;
 
 /** 所有 Root 子进程共用串行入口，诊断注销完成后才允许基带操作。 */
 final class RootShell {
@@ -33,7 +34,13 @@ final class RootShell {
         if (!diagnosticSafe) throw new IllegalStateException("诊断接口已暂停");
         try {
             String output = run(command, timeoutSeconds);
-            if (output.contains("\"error\":\"cleanup\"")) diagnosticSafe = false;
+            // su 可能掩盖信号退出，必须收到原生程序的完成回执。
+            JSONObject result = null;
+            for (String line : output.split("\\r?\\n"))
+                if (line.trim().startsWith("{")) result = new JSONObject(line);
+            if (result == null || !result.has("logs") && !result.has("error"))
+                throw new IllegalStateException("诊断退出未返回完成结果");
+            if (result.optString("error").equals("cleanup")) diagnosticSafe = false;
             return output;
         } catch (Exception error) {
             // 无法确认注销时，不让后续写操作与残留诊断会话并发。
@@ -75,7 +82,8 @@ final class RootShell {
                         granted = false;
                         throw new IllegalStateException("Root 未授权，请检查后手动刷新");
                     }
-                    if (error.isEmpty()) throw new IllegalStateException("Root 接口异常退出");
+                    // 原生接口以 1 返回业务错误，watchdog 或信号退出不能忽略。
+                    if (process.exitValue() != 1 || error.isEmpty()) throw new IllegalStateException("Root 接口异常退出（" + process.exitValue() + "）");
                 }
                 return text;
             }

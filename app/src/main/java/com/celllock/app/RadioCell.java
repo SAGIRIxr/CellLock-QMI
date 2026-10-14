@@ -104,13 +104,13 @@ final class RadioCell {
     boolean hasTarget(RadioCell serving) {
         if (!validIdentity(nr, arfcn, pci) || !nr && arfcn > InputValidator.MAX_EARFCN) return false;
         if (hasTarget()) return true;
-        return recent() && serving != null && serving.registered && serving.recent()
+        return recentMeasurement() && serving != null && serving.registered && serving.recentMeasurement()
                 && nr == serving.nr && serving.band > 0 && targetBand(serving) == serving.band && arfcn == serving.arfcn;
     }
 
     int targetBand(RadioCell serving) {
         if (!nr || "系统".equals(details.get("频段来源")) || serving == null || !serving.nr
-                || !serving.registered || !serving.recent() || serving.band <= 0 || arfcn != serving.arfcn) return band;
+                || !serving.registered || !serving.recentMeasurement() || serving.band <= 0 || arfcn != serving.arfcn) return band;
         BitSet preferred = new BitSet();
         preferred.set(serving.band);
         int matched = Bands.nrBandForArfcn(arfcn, preferred);
@@ -125,6 +125,8 @@ final class RadioCell {
         return new RadioCell(nr, registered, arfcn, pci, matched, rsrp, level, timestamp, identity,
                 source, mapped, receivedAt, values);
     }
+
+    private boolean recentMeasurement() { return recent() && (timestamp == 0 || fresh()); }
 
     boolean recent() {
         long now = android.os.SystemClock.elapsedRealtime();

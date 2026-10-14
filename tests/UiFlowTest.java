@@ -95,6 +95,22 @@ public final class UiFlowTest extends Instrumentation {
         Bundle saved=new Bundle();page.save(saved);LockPage restored=new LockPage(activity,ui,new Host());restored.setState(state);restored.restore(saved);
         check(UiFlowTest.<Ui.Segmented>field(restored,"sectionTabs").selected()==2&&UiFlowTest.<Ui.Segmented>field(restored,"cellTabs").selected()==1,"form survives recreation");
 
+        RadioCell n77=RadioCell.parse(nr.json().put("arfcn",640000).put("band",77),"Root 电话");
+        RadioCell candidate=RadioCell.measured(true,false,640000,2,-100,"DIAG NR");
+        for(long time:new long[]{SystemClock.elapsedRealtime()-120_000,SystemClock.elapsedRealtime()+60_000}) {
+            RadioCell invalid=RadioCell.parse(n77.json().put("timestamp",time),"Root 电话");
+            check(!candidate.hasTarget(invalid),"invalid service measurement cannot authorize DIAG target");
+            check(candidate.withServingBand(invalid).band==78,"invalid service measurement cannot infer n77");
+            check(!invalid.hasTarget(invalid)&&!invalid.hasTarget(n77),"invalid phone target cannot use reception fallback");
+            page.setServingCell(invalid);page.fillTarget(candidate);
+            check(cell.selected()==1,"invalid DIAG target cannot open NR lock form");
+        }
+        page.setServingCell(n77);page.fillTarget(candidate);
+        check(cell.selected()==0&&UiFlowTest.<TextView>field(page,"nrBand").getText().toString().equals("77"),"fresh service still fills n77 target");
+        RadioCell nas=RadioCell.measured(true,true,640000,1,-98,"QMI NAS");
+        check(candidate.hasTarget(nas),"untimestamped NAS service still supports fresh candidates");
+        check(!candidate.hasTarget(nas.withReceivedAt(SystemClock.elapsedRealtime()-15_000)),"expired NAS reference cannot authorize target");
+
         for(float scale:new float[]{1f,1.3f}) {
             Configuration config=new Configuration(app.getResources().getConfiguration());config.fontScale=scale;
             Activity scaled=new TestActivity(app.createConfigurationContext(config));Ui scaledUi=new Ui(scaled);RadioReader reader=new RadioReader(scaled);

@@ -181,6 +181,8 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 可选 `-Captures <本地 device-paths 目录>` 额外验证既有脱敏真机数据。固定测试时钟只在 `tests/host/` 使用，不打入 APK；此测试不代替系统时钟、权限或 Binder 的真机回归。
 
+Root 子进程退出保护可运行 `./tests/run-root-shell.ps1 -JsonJar $jsonJar -Jdk <JDK目录>`（需要本机 GCC，沿用上述 JSON 测试运行库）。脚本在临时目录编译假 `su.exe`，覆盖正常回包、业务错误、注销失败、watchdog 和信号退出，以及手动重试不能解除写入保护；不调用真实 Root 或基带。
+
 `ReadingPolicyTest` 覆盖 DIAG 入口选择，以及电话已有服务身份时 NAS 补入异频邻区、去重、部分字段与冲突身份保留；`RadioCellTest` 包含 n77/n78 重叠频段、显示 / 填表一致性及可信服务优先；`MeasurementDecoderTest` 核对 NAS 标识的端序、占位值和邻区归属边界。`native/test_read` 与 `test_diag` 都只做内存自检，不发送基带请求。
 
 `UiFlowTest` 在 Android instrumentation 中实例化真实页面，用记录命令的 Host 检查重排后的 NR / LTE 小区、频点、解锁与频段参数，不执行命令；还检查表单重建、精简字段以及 320dp / 130% 字体下的信号文字。先用同一默认 debug 签名安装当前 APK，再运行下列命令；脚本使用 SDK 35 / Build Tools 34.0.0 和本机默认 debug keystore，临时测试包运行后卸载，不打入正式 APK。仅连接目标设备，测试会停止目标应用：

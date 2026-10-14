@@ -36,6 +36,19 @@ public final class RadioCellTest {
         check(matched.timestamp == 0 && !matched.mapped && matched.receivedAt == overlapping.receivedAt,
                 "band matching does not invent identity or measurement time");
         check(matched.details.get("频段来源").equals("服务频段匹配"), "matched band provenance displayed");
+        for (long timestamp : new long[]{SystemClock.now - 60_001, SystemClock.now + 1}) {
+            RadioCell stale = RadioCell.parse(n77.json().put("timestamp", timestamp), "Root 电话");
+            check(!overlapping.hasTarget(stale), "stale or future service cannot authorize DIAG target");
+            check(overlapping.withServingBand(stale).band == 78, "invalid service time cannot change inferred band");
+            check(!stale.hasTarget(stale) && !stale.hasTarget(n77), "reception time cannot revive an invalid phone target");
+        }
+        RadioCell boundary = RadioCell.parse(n77.json().put("timestamp", SystemClock.now - 60_000), "Root 电话");
+        check(overlapping.hasTarget(boundary), "service measurement remains valid at the 60-second boundary");
+        RadioCell nas = RadioCell.measured(true, true, 640000, 1, -98, "QMI NAS");
+        check(overlapping.hasTarget(nas) && nas.hasTarget(nas), "untimestamped NAS still uses reception age");
+        SystemClock.now += 15_000;
+        check(!RadioCell.measured(true, false, 640000, 2, -100, "DIAG NR").hasTarget(nas), "NAS reference expires after 15 seconds");
+        SystemClock.now -= 15_000;
         RadioCell reported = RadioCell.parse(overlapping.json().put("details", new JSONObject().put("频段来源", "系统")), "Root 电话");
         check(!reported.hasTarget(n77) && reported.targetBand(n77) == 78, "explicit reported n78 is not overwritten");
         check(!overlapping.hasTarget(phone(true, 640000, 1, 28, true)), "same frequency cannot fabricate incompatible band");
