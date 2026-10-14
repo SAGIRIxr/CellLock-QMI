@@ -85,6 +85,35 @@ public final class RadioCellTest {
         check(kept.signalLabel().equals("RSRQ -12 dB") && kept.details.containsKey("TAC") && kept.detailLabel().contains("MCC"),
                 "neighbor summary hides metadata without deleting original fields");
 
+        RadioCell nr41 = phone(true, 504990, 48, 41, true);
+        RadioCell nr41Neighbor = RadioCell.measured(true, false, 504990, 49, -100, "DIAG NR · SIM 归属未知");
+        check(nr41Neighbor.isNeighborOf(nr41) && nr41Neighbor.hasTarget(nr41), "same NR carrier retains candidate qualification");
+        check(!nr41Neighbor.isNeighborOf(lteServing), "SIM2 LTE cannot claim SIM1 NR observations");
+        check(!nr41Neighbor.isNeighborOf(serving), "another NR carrier remains unassigned on dual NR devices");
+        check(neighbor.isNeighborOf(serving), "other SIM can independently qualify its NR carrier");
+        check(!nr41Neighbor.mapped, "matching never invents SIM ownership");
+        RadioCell nasNeighbor = RadioCell.measured(false, false, 1650, 47, -100, "QMI NAS");
+        check(nasNeighbor.isNeighborOf(lteServing), "bound NAS neighbor kept");
+        RadioCell interFrequency = RadioCell.measured(false, false, 1850, 47, -100, "QMI NAS");
+        check(interFrequency.isNeighborOf(lteServing), "bound inter-frequency NAS neighbor kept");
+        RadioCell hint = RadioCell.measured(true, false, 504990, CellInfo.UNAVAILABLE, CellInfo.UNAVAILABLE, "QMI NAS · 仅频点");
+        check(!hint.isNeighborOf(lteServing) && !hint.isNeighborOf(nr41), "frequency-only hint is never a neighbor");
+        RadioCell serviceCopy = RadioCell.measured(true, false, 504990, 48, -100, "DIAG NR");
+        check(RadioCell.surrounding(List.of(nr41, serviceCopy, nr41Neighbor, nr41Neighbor), nr41).equals(List.of(nr41Neighbor)),
+                "serving DIAG duplicate and repeated neighbor removed");
+        RadioCell known = lteServing.withIdentity(100).withDetails(Map.of("TAC", "123"));
+        RadioCell conflict = RadioCell.measured(false, true, 1650, 111, -90, "QMI NAS").withIdentity(200).withDetails(Map.of("TAC", "456"));
+        check(!conflict.sameCell(known) && !conflict.isNeighborOf(known) && !conflict.hasTarget(known), "conflicting service cannot be merged, classified as neighbor or used as target");
+        check(RadioCell.surrounding(List.of(known, conflict), known).equals(List.of(conflict)), "conflicting service retained for inspection");
+        RadioCell tacConflict = RadioCell.measured(false, true, 1650, 111, -90, "QMI NAS").withIdentity(100).withDetails(Map.of("TAC", "456"));
+        check(!tacConflict.sameCell(known), "matching CI cannot erase TAC conflict");
+        RadioCell bandConflict = nr41.withRfBand(90);
+        check(!bandConflict.sameCell(nr41), "confirmed overlapping bands remain distinct");
+        RadioCell selectedNeighbor = phone(false, 1650, 47, 3, false);
+        check(RadioCell.surrounding(List.of(lteServing, nasNeighbor, selectedNeighbor), lteServing).equals(List.of(selectedNeighbor)), "mapped neighbor preferred without duplicate rows");
+        RadioCell staleNeighbor = RadioCell.parse(selectedNeighbor.json().put("timestamp", SystemClock.now - 61_000), "Root 电话");
+        check(RadioCell.surrounding(List.of(lteServing, staleNeighbor, nasNeighbor), lteServing).equals(List.of(nasNeighbor)), "fresh candidate replaces stale duplicate");
+
         DiagnosticCells cache = new DiagnosticCells();
         cache.context("1:0", List.of(serving));
         cache.merge(List.of(neighbor, RadioCell.measured(true, false, 154570, 140, -101, "DIAG NR")), SystemClock.now);

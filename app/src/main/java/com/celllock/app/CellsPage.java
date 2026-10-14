@@ -48,12 +48,13 @@ final class CellsPage extends ScrollView {
     };
     private Runnable timeout;
     private int subscriptionId = SubscriptionManager.INVALID_SUBSCRIPTION_ID, generation, neighborTotal;
-    private boolean foreground, busy, disposed, reading, scheduled, cached;
+    private boolean foreground, busy, disposed, reading, scheduled, cached, otherExpanded;
     private RadioCell serving;
     private TextView autoStatus, rat, servingCaption, signal, quality, reference;
-    private TextView arfcn, pci, band, bandNotice, serviceMetrics, observationStatus, neighborCount, trendRange, trendStatus;
-    private Button refreshButton, targetButton;
-    private LinearLayout neighbors;
+    private TextView arfcn, pci, band, bandNotice, serviceMetrics, observationStatus, neighborCount, trendRange, trendStatus, otherNotice;
+    private Button refreshButton, targetButton, otherHeading;
+    private LinearLayout neighbors, otherObservations;
+    private int otherTotal;
     private LineIcon bars;
     private SignalChartView chart;
 
@@ -174,6 +175,17 @@ final class CellsPage extends ScrollView {
         neighbors = ui.column();
         neighbors.setBackground(ui.shape(Ui.CARD, 20, 0));
         page.addView(neighbors, ui.fill(-2));
+        ui.gap(page, 8);
+        otherHeading = ui.button("其他观测", false);
+        otherHeading.setOnClickListener(v -> { otherExpanded = !otherExpanded; renderOtherVisibility(); });
+        page.addView(otherHeading, ui.fill(48));
+        otherNotice = ui.caption("SIM 归属或服务身份未确认，不计入周边数量");
+        page.addView(otherNotice, ui.fill(-2));
+        ui.gap(page, 8);
+        otherObservations = ui.column();
+        otherObservations.setBackground(ui.shape(Ui.CARD, 20, 0));
+        page.addView(otherObservations, ui.fill(-2));
+        clearOtherObservations();
     }
 
     private TextView metric(LinearLayout parent, String label) {
@@ -318,21 +330,39 @@ final class CellsPage extends ScrollView {
         recordSignal();
         renderServing();
         neighbors.removeAllViews();
+        otherObservations.removeAllViews();
         targetViews.clear();
-        int count = 0;
-        for (RadioCell cell : cells) {
-            if (cell == serving) continue;
-            if (count++ > 0) {
+        int count = 0; otherTotal = 0;
+        for (RadioCell cell : RadioCell.surrounding(cells, serving)) {
+            if (!RadioCell.validIdentity(cell.nr, cell.arfcn, cell.pci)) continue;
+            boolean related = cell.isNeighborOf(serving);
+            LinearLayout group = related ? neighbors : otherObservations;
+            int index = related ? count++ : otherTotal++;
+            if (index > 0) {
                 LinearLayout.LayoutParams divider = ui.fill(1);
                 divider.setMargins(ui.dp(16), 0, ui.dp(16), 0);
-                neighbors.addView(ui.divider(), divider);
+                group.addView(ui.divider(), divider);
             }
-            addNeighbor(cell.withServingBand(serving));
+            addNeighbor(group, cell.withServingBand(serving));
         }
         neighborTotal = count;
         neighborCount.setText(count + " 个");
         if (count == 0) emptyNeighbors("本次没有更多可见小区");
+        renderOtherVisibility();
         observationStatus.setVisibility(GONE);
+    }
+
+    private void renderOtherVisibility() {
+        otherHeading.setText("其他观测 · " + otherTotal + " 个 · " + (otherExpanded ? "收起" : "展开"));
+        otherHeading.setContentDescription(otherHeading.getText() + "，SIM 归属或服务身份尚未确认");
+        otherHeading.setVisibility(otherTotal > 0 ? VISIBLE : GONE);
+        otherNotice.setVisibility(otherTotal > 0 ? VISIBLE : GONE);
+        otherObservations.setVisibility(otherTotal > 0 && otherExpanded ? VISIBLE : GONE);
+    }
+
+    private void clearOtherObservations() {
+        otherObservations.removeAllViews(); otherTotal = 0; otherExpanded = false;
+        renderOtherVisibility();
     }
 
     private void renderServing() {
@@ -364,7 +394,7 @@ final class CellsPage extends ScrollView {
         Ui.enable(targetButton, !disposed && !busy && serving != null && serving.hasTarget(serving));
     }
 
-    private void addNeighbor(RadioCell cell) {
+    private void addNeighbor(LinearLayout group, RadioCell cell) {
         LinearLayout item = ui.row();
         item.setPadding(ui.dp(14), ui.dp(12), ui.dp(12), ui.dp(12));
         item.setBackground(ui.ripple(Ui.CARD, 16));
@@ -382,6 +412,7 @@ final class CellsPage extends ScrollView {
         if(!metrics.isEmpty())identity.addView(ui.text(metrics,10,Ui.MUTED));
         String source = cell.source.replace(" · SIM 归属未知", "");
         if(source.equals("系统") || source.equals("Root 电话"))source = "";
+        if (cell.registered) source = "服务记录 · 身份待核对" + (source.isEmpty() ? "" : " · " + source);
         if(!source.isEmpty())identity.addView(ui.text(source,10,Ui.MUTED));
         item.addView(identity, ui.weight(-2));
         LinearLayout strength = ui.column();
@@ -411,7 +442,7 @@ final class CellsPage extends ScrollView {
             item.setOnClickListener(v -> selectTarget(cell));
             Ui.enable(item, !busy);
         } else item.setAlpha(.55f);
-        neighbors.addView(item, ui.fill(-2));
+        group.addView(item, ui.fill(-2));
     }
 
     private void selectTarget(RadioCell cell) {
@@ -427,6 +458,7 @@ final class CellsPage extends ScrollView {
         renderServing();
         targetViews.clear();
         neighbors.removeAllViews();
+        clearOtherObservations();
         emptyNeighbors(message);
         neighborTotal=0;neighborCount.setText("0 个");
         observationStatus.setText(message);
@@ -437,6 +469,7 @@ final class CellsPage extends ScrollView {
     private void showMissing(String message) {
         if(!hasObservations){showEmpty(message);return;}
         history.markGap();renderTrend();
+        clearOtherObservations();
         targetViews.clear();neighbors.removeAllViews();emptyNeighbors(message);neighborTotal=0;neighborCount.setText("0 个");
         observationStatus.setText("上次观测 · 接收 "+Math.max(0,(SystemClock.elapsedRealtime()-receivedAt)/1000)+" 秒前 · "+message);
         observationStatus.setVisibility(VISIBLE);

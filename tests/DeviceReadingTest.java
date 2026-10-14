@@ -4,8 +4,12 @@ import android.app.Activity;
 import android.app.Instrumentation;
 import android.os.Bundle;
 import android.telephony.CellInfo;
+import android.view.View;
+import android.widget.Button;
+import android.widget.TextView;
 import java.lang.reflect.Method;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -44,13 +48,49 @@ public final class DeviceReadingTest extends Instrumentation {
                 check(!observation[0].mappingChanged && !observation[0].cells.isEmpty(), "SIM mapping changed or no App cells");
                 RadioCell serving = RadioCell.serving(observation[0].cells);
                 check(serving != null, "no App service");
-                check(serving.nr == qmi.nr && serving.arfcn == qmi.arfcn && serving.pci == qmi.pci
-                        && (serving.identity < 0 || qmi.identity < 0 || serving.identity == qmi.identity), "App/QMI identity disagreement");
-                check(serving.band == qmi.band && serving.details.containsKey("射频频段"), "QMI band not integrated into App");
+                check(serving.nr == qmi.nr && serving.arfcn == qmi.arfcn && serving.pci == qmi.pci, "App/QMI carrier disagreement");
+                List<RadioCell> surrounding = RadioCell.surrounding(observation[0].cells, serving);
+                if (serving.sameCell(qmi)) check(serving.band == qmi.band && serving.details.containsKey("射频频段"), "QMI band not integrated into matching App service");
+                else check(surrounding.stream().anyMatch(c -> c.registered && c.sameCell(qmi)
+                        && !c.isNeighborOf(serving) && !c.hasTarget(serving)), "conflicting QMI service must remain separate and unselectable");
+                Throwable[] failure = {null};
+                runOnMainSync(() -> {
+                    CellsPage page = null;
+                    try {
+                        Activity activity = new UiFlowTest.TestActivity(getTargetContext());
+                        RadioCell[] selected = {null};
+                        page = new CellsPage(activity, new Ui(activity), reader, new CellsPage.Host() {
+                            public void onTarget(RadioCell cell) { selected[0] = cell; }
+                            public void onNeedPermission() { throw new AssertionError("unexpected permission request"); }
+                            public void onServingChanged(RadioCell cell) {}
+                            public void onSimChanged() {}
+                        });
+                        Method display = CellsPage.class.getDeclaredMethod("display", RadioReader.Observation.class);
+                        display.setAccessible(true); display.invoke(page, observation[0]);
+                        long neighbors = surrounding.stream().filter(c -> c.isNeighborOf(serving)).count();
+                        check(UiFlowTest.<TextView>field(page, "neighborCount").getText().toString().equals(neighbors + " 个"), "actual UI neighbor count includes unrelated cells");
+                        View other = UiFlowTest.field(page, "otherObservations");
+                        check(other.getVisibility() == View.GONE, "actual other observations must start collapsed");
+                        if (surrounding.stream().anyMatch(c -> RadioCell.validIdentity(c.nr, c.arfcn, c.pci) && !c.isNeighborOf(serving))) {
+                            UiFlowTest.<Button>field(page, "otherHeading").performClick();
+                            check(other.getVisibility() == View.VISIBLE, "actual other observations cannot expand");
+                        }
+                        Map<View,RadioCell> targets = UiFlowTest.field(page, "targetViews");
+                        check(targets.values().stream().allMatch(c -> c.hasTarget(serving)), "actual UI exposes invalid target");
+                        for (var entry : targets.entrySet()) {
+                            selected[0] = null; entry.getKey().performClick();
+                            check(selected[0] == entry.getValue(), "actual eligible neighbor click failed");
+                        }
+                    } catch (Throwable error) { failure[0] = error; }
+                    finally { if (page != null) page.dispose(); }
+                });
+                if (failure[0] != null) throw new AssertionError(failure[0]);
                 long diagTargets = observation[0].cells.stream().filter(c -> c.source.startsWith("DIAG") && c.hasTarget(serving)).count();
                 summary.append("SIM ").append(sim.slot+1).append(": RAT="+(serving.nr?"NR":"LTE")+" ARFCN="+serving.arfcn+" PCI="+serving.pci
                         +" band="+serving.bandLabel()+" RSRP="+serving.rsrp+" SCS="+serving.details.get("SCS")
-                        +" cells="+observation[0].cells.size()+" DIAG-targets="+diagTargets).append('\n');
+                        +" cells="+observation[0].cells.size()+" DIAG-targets="+diagTargets
+                        +" neighbors="+surrounding.stream().filter(c -> c.isNeighborOf(serving)).count()
+                        +" service-identity-agreement="+serving.sameCell(qmi)).append('\n');
                 tested++;
             }
             check(tested > 0, "no trusted SIM was tested");

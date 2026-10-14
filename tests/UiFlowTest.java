@@ -19,7 +19,7 @@ import org.json.JSONObject;
 /** Android layout/command checks with a recording Host; never invokes the modem. */
 public final class UiFlowTest extends Instrumentation {
     private static int checks;
-    private static final class TestActivity extends Activity {
+    static final class TestActivity extends Activity {
         TestActivity(Context context) { attachBaseContext(new android.view.ContextThemeWrapper(context,android.R.style.Theme_Material_Light_NoActionBar)); }
         @Override public android.content.res.Resources.Theme getTheme() { return getBaseContext().getTheme(); }
         @Override public Object getSystemService(String name) { return getBaseContext().getSystemService(name); }
@@ -32,7 +32,7 @@ public final class UiFlowTest extends Instrumentation {
         public void onMessage(String title,String message) { throw new AssertionError(title+": "+message); }
     }
     private static void check(boolean value,String message) { checks++; if(!value)throw new AssertionError(message); }
-    @SuppressWarnings("unchecked") private static <T> T field(Object object,String name) throws Exception {
+    @SuppressWarnings("unchecked") static <T> T field(Object object,String name) throws Exception {
         Field f=object.getClass().getDeclaredField(name);f.setAccessible(true);return (T)f.get(object);
     }
     private static void invoke(Object object,String name) throws Exception {
@@ -139,8 +139,28 @@ public final class UiFlowTest extends Instrumentation {
                     TextView strength=labels.stream().filter(t->t.getText().toString().equals(text)).findFirst().orElseThrow();
                     check(strength.getPaint().measureText(text)<=strength.getWidth(),"neighbor strength clipped at scale "+scale+": "+text);
                 }
-                check(labels.stream().anyMatch(t->t.getText().toString().equals("DIAG NR"))&&labels.stream().anyMatch(t->t.getText().toString().equals("RSRQ -12 dB")),"source and quality retained");
-                check(labels.stream().noneMatch(t->t.getText().toString().matches(".*(SIM 归属未知|同频候选|连接角色|频段来源|TAC|NCI|Root 电话).*")),"metadata hidden from cards");
+                check(labels.stream().anyMatch(t->t.getText().toString().equals("DIAG NR"))&&labels.stream().anyMatch(t->t.getText().toString().equals("RSRQ -12 dB")),"source and quality retained without unassigned SIM suffix");
+                check(labels.stream().noneMatch(t->t.getText().toString().matches(".*(SIM 归属未知|连接角色|频段来源|TAC|NCI|Root 电话).*")),"metadata hidden from cards");
+                display.invoke(cells,new RadioReader.Observation(List.of(lte,neighbor),"SIM 2",false));
+                check(UiFlowTest.<TextView>field(cells,"neighborCount").getText().toString().equals("0 个"),"SIM2 LTE count excludes unassigned NR");
+                check(texts(UiFlowTest.<View>field(cells,"neighbors")).stream().noneMatch(t->t.getText().toString().equals("PCI 78")),"unassigned NR cannot appear in current SIM neighbors");
+                View other=field(cells,"otherObservations"); Button otherHeading=field(cells,"otherHeading");
+                check(otherHeading.getVisibility()==View.VISIBLE&&other.getVisibility()==View.GONE,"other observations collapsed by default");
+                otherHeading.performClick();
+                check(other.getVisibility()==View.VISIBLE&&texts(other).stream().anyMatch(t->t.getText().toString().equals("PCI 78")),"unassigned NR available after expansion");
+                check(UiFlowTest.<Map<View,RadioCell>>field(cells,"targetViews").isEmpty(),"unrelated NR cannot fill SIM2 target");
+                RadioCell hint=RadioCell.measured(true,false,504990,android.telephony.CellInfo.UNAVAILABLE,android.telephony.CellInfo.UNAVAILABLE,"QMI NAS · 仅频点");
+                RadioCell lteIdentity=lte.withIdentity(100),conflict=RadioCell.measured(false,true,1650,111,-92,"QMI NAS").withIdentity(200);
+                display.invoke(cells,new RadioReader.Observation(List.of(lteIdentity,conflict,hint,hint.withSource("Root 电话",true)),"SIM 2",false));
+                check(UiFlowTest.<TextView>field(cells,"neighborCount").getText().toString().equals("0 个")&&texts(other).stream().anyMatch(t->t.getText().toString().contains("服务记录 · 身份待核对")),"conflicting service not misrepresented as neighbor");
+                check(texts(cells).stream().noneMatch(t->t.getText().toString().contains("504990")||t.getText().toString().contains("频点提示")),"incomplete frequency records stay hidden");
+                display.invoke(cells,new RadioReader.Observation(List.of(nr,RadioCell.measured(true,false,154570,139,-100,"DIAG NR"),neighbor),"SIM 1",false));
+                check(UiFlowTest.<TextView>field(cells,"neighborCount").getText().toString().equals("1 个")&&otherHeading.getVisibility()==View.GONE,"switching to NR removes serving duplicate and retains eligible neighbor");
+                check(UiFlowTest.<Map<View,RadioCell>>field(cells,"targetViews").size()==1,"NR candidate stays clickable after grouping");
+                display.invoke(cells,new RadioReader.Observation(List.of(nr,RadioCell.measured(true,false,154570,android.telephony.CellInfo.UNAVAILABLE,-100,"QMI NAS · 仅频点")),"SIM 1",false));
+                check(UiFlowTest.<TextView>field(cells,"neighborCount").getText().toString().equals("0 个")&&otherHeading.getVisibility()==View.GONE,"incomplete same-frequency record adds no rows");
+                var missing=CellsPage.class.getDeclaredMethod("showMissing",String.class);missing.setAccessible(true);missing.invoke(cells,"temporarily unavailable");
+                check(otherHeading.getVisibility()==View.GONE&&texts(other).isEmpty(),"missing data clears supplementary display");
                 display.invoke(cells,new RadioReader.Observation(List.of(corrected,correctedNeighbor),"QMI 校正",false));layout(cells,scaledUi.dp(320));
                 TextView correctedLabel=field(cells,"band"),notice=field(cells,"bandNotice");
                 check(correctedLabel.getText().toString().equals("n28（校正）")&&notice.getText().toString().contains("系统原报 n41"),"correction and original report visible");

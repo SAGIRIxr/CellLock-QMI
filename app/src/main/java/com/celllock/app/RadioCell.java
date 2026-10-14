@@ -7,7 +7,9 @@ import android.telephony.CellInfoLte;
 import android.telephony.CellInfoNr;
 import android.telephony.CellSignalStrengthNr;
 import java.util.Collections;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Locale;
 import org.json.JSONObject;
@@ -115,6 +117,8 @@ final class RadioCell {
 
     boolean hasTarget(RadioCell serving) {
         if (!validIdentity(nr, arfcn, pci) || !nr && arfcn > InputValidator.MAX_EARFCN) return false;
+        if (registered && serving != null && nr == serving.nr && arfcn == serving.arfcn && pci == serving.pci
+                && !sameCell(serving)) return false;
         if (hasTarget()) return true;
         return recentMeasurement() && serving != null && serving.registered && serving.recentMeasurement()
                 && nr == serving.nr && (serving.band > 0 || nr && !Bands.nrCandidates(arfcn).isEmpty())
@@ -144,13 +148,44 @@ final class RadioCell {
         return receivedAt > 0 && receivedAt <= now && now - receivedAt < DiagnosticCells.WINDOW_MS;
     }
 
-    static RadioCell serving(java.util.List<RadioCell> cells) {
+    static RadioCell serving(List<RadioCell> cells) {
         RadioCell best = null;
         for (RadioCell cell : cells) if (cell.registered && (best == null || cell.rank() > best.rank())) best = cell;
         return best;
     }
 
     private int rank() { return (mapped ? 4 : 0) + (nr ? 2 : 0) + (validIdentity(nr, arfcn, pci) ? 1 : 0); }
+
+    boolean sameCell(RadioCell other) {
+        if (other == null || nr != other.nr || arfcn != other.arfcn || pci != other.pci
+                || !validIdentity(nr, arfcn, pci) || band > 0 && other.band > 0 && band != other.band
+                || identity >= 0 && other.identity >= 0 && identity != other.identity) return false;
+        for (String name : new String[]{"TAC", "MCC", "MNC", "PLMN"})
+            if (details.containsKey(name) && other.details.containsKey(name)
+                    && !details.get(name).equals(other.details.get(name))) return false;
+        return true;
+    }
+
+    boolean isNeighborOf(RadioCell serving) {
+        return !registered && validIdentity(nr, arfcn, pci)
+                && (mapped || source.equals("QMI NAS") || hasTarget(serving));
+    }
+
+    static List<RadioCell> surrounding(List<RadioCell> cells, RadioCell serving) {
+        List<RadioCell> result = new ArrayList<>();
+        for (RadioCell cell : cells) {
+            if (cell == serving || cell.sameCell(serving)) continue;
+            int duplicate = -1;
+            for (int i = 0; i < result.size(); i++) if (cell.sameCell(result.get(i))) { duplicate = i; break; }
+            if (duplicate < 0) result.add(cell);
+            else {
+                RadioCell old = result.get(duplicate);
+                if (cell.recentMeasurement() && (!old.recentMeasurement() || cell.rank() > old.rank()
+                        || cell.rank() == old.rank() && cell.registered && !old.registered)) result.set(duplicate, cell);
+            }
+        }
+        return result;
+    }
 
     private static int available(int value, int min, int max) {
         return value >= min && value <= max ? value : CellInfo.UNAVAILABLE;
