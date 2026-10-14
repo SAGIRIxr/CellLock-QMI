@@ -118,10 +118,10 @@ final class DevicePage extends ScrollView {
         TextView free = ui.text("全部功能免费 · 无会员 · 无广告", 12, Ui.GREEN);
         free.setGravity(Gravity.CENTER);
         page.addView(free);
-        update(null, "", "", false, null);
+        update(null, "", "", false, null, SimStatus.PERMISSION_REQUIRED);
     }
 
-    void update(ModemState state, String backendStatus, String lastRead, boolean busy, List<String> logs) {
+    void update(ModemState state, String backendStatus, String lastRead, boolean busy, List<String> logs, SimStatus simStatus) {
         status.setText(busy ? "正在与基带通信…" : backendStatus == null || backendStatus.isEmpty()
                 ? "尚未读取，首次使用需授权 Root" : backendStatus);
         lastReadValue.setText(lastRead == null || lastRead.isEmpty() ? "—" : lastRead);
@@ -129,8 +129,8 @@ final class DevicePage extends ScrollView {
         nrBands.setText(hardwareBands(state == null ? null : state.hwNr, state != null && state.hwKnown, "n"));
         readButton.setText(busy ? "读取中" : "读取");
         Ui.enable(readButton, !busy);
-        permission(phonePermission, activity.checkSelfPermission(Manifest.permission.READ_PHONE_STATE)
-                == PackageManager.PERMISSION_GRANTED, "已授予", "未授予");
+        permission(phonePermission, simStatus == SimStatus.AVAILABLE || simStatus == SimStatus.NONE,
+                "已授予", simStatus.permissionLabel);
         permission(locationPermission, activity.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
                 == PackageManager.PERMISSION_GRANTED, "已授予", "未授予");
         LocationManager location = activity.getSystemService(LocationManager.class);

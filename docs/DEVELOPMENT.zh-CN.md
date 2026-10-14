@@ -30,6 +30,7 @@ CellLock 是面向已 Root 高通 Android 手机的本地网络设置工具，�
 | `Models.java` | `Rat`、`ModemState`、`ModemResult`；未知状态和偏好 / 硬件分离 |
 | `Snapshots.java` | 每张卡首次完整偏好快照、恢复命令生成、最终全值匹配 |
 | `RadioCell.java`、`Bands.java` | 系统 CellInfo 简化、频段查找与 SCS 建议；建议值不是测量值 |
+| `SimStatus.java` | 区分电话未授权、SIM 信息读取受限、无卡和可用订阅 |
 | `SignalHistory.java`、`SignalChartView.java` | 真时间戳去重、滚动窗口、断线、Canvas 绘图 |
 | `Ui.java`、`FlowLayout.java`、`LineIcon.java` | 配色、控件、流式芯片与本地矢量图标 |
 | `InputValidator.java` | 输入范围、频段与频点等约束 |
@@ -61,6 +62,7 @@ flowchart LR
 - callback 必须同时匹配请求 generation、捕获的 subscription ID、前台状态、非 busy 状态和 reading 标记。旧请求不得结束或覆盖新请求。
 - 暂停、销毁、切 SIM 时取消定时与超时回调，增加 generation；迟到的系统回调会被丢弃。
 - Root 读取或写入期间暂停系统观测，任务结束后恢复。缺权限、定位或有效 SIM 时，自动入口静默等待；只有手动操作才引导授权。
+- `SimStatus` 区分未授权、读取受限、无卡和正常订阅。已授权但订阅列表为空时，结合公开 SIM 就绪状态或权限异常提示读取受限；不使用推测的订阅 ID 或卡槽作为锁网目标。MIUI 用户需在系统权限设置关闭空白授权，应用不修改系统权限限制。
 - `CellInfo.getTimestampMillis()` 与 `SystemClock.elapsedRealtime()` 使用同一时间基准。相同 / 倒序 / 未来 / 超过窗口的时间戳不产生新点；不能用 callback 到达时间伪造采样。
 - 最近 5 分钟、最多 60 点。LTE RSRP 与 NR SS-RSRP 使用相同图表，但 RAT、频点、PCI、身份变化时断线；空观测、后台、超时也断线，不填零或插补。
 - 切卡清历史；同卡旋转通过 Bundle 保存样本，恢复后先断开连线。信号颜色和“强 / 弱”仅为应用参考。
@@ -147,15 +149,16 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 手机上通过 Root 管理器单独授权 `com.celllock.app`，电话 / 精确位置权限及定位开关由界面引导。多设备连接时请自行选定 adb 目标，不要依赖列表第一项。
 
-参数与曲线测试可直接在 PC JDK 运行：
+参数、曲线与 SIM 状态测试可直接在 PC JDK 运行：
 
 ```powershell
 $javac = Join-Path $env:JAVA_HOME 'bin/javac.exe'
 $java = Join-Path $env:JAVA_HOME 'bin/java.exe'
 New-Item -ItemType Directory -Force tests/local-classes | Out-Null
-& $javac -encoding UTF-8 -d tests/local-classes app/src/main/java/com/celllock/app/InputValidator.java tests/InputValidatorTest.java app/src/main/java/com/celllock/app/SignalHistory.java tests/SignalHistoryTest.java
+& $javac -encoding UTF-8 -d tests/local-classes app/src/main/java/com/celllock/app/InputValidator.java tests/InputValidatorTest.java app/src/main/java/com/celllock/app/SignalHistory.java tests/SignalHistoryTest.java app/src/main/java/com/celllock/app/SimStatus.java tests/SimStatusTest.java
 & $java -cp tests/local-classes com.celllock.app.InputValidatorTest
 & $java -cp tests/local-classes com.celllock.app.SignalHistoryTest
+& $java -cp tests/local-classes com.celllock.app.SimStatusTest
 ```
 
 快照测试依赖 Android `org.json`，不能用 SDK 的 stub jar 直接当桌面运行库。可将当前模型和测试编译为 dex，在 Android runtime 执行；这只运行内存逻辑，不调用后端：

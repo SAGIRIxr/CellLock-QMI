@@ -21,6 +21,7 @@
 ## 使用
 
 1. 安装 APK，在 Root 管理器中允许 CellLock；在“设备”页授予电话、精确位置权限，并开启系统定位。
+   MIUI 等系统还需允许获取真实电话信息，关闭“空白授权”。若显示“SIM 信息读取受限”，点击“授予权限”或小区页“刷新”进入应用权限设置；返回应用后会重新读取 SIM。精确位置授权与系统定位开关都必须开启，才能观测小区。
 2. 选择上方 SIM，进入“锁定”页读取当前配置；软件按每张卡保存首次完整读取的初始频段与制式。
 3. 从“小区”页选择目标，或在“锁定”页选择“小区 / 频段 / 制式”，核对参数后确认写入。NR 频段与 SCS 建议值可以手改。
 4. 查看回读结果。配置确认后，可返回“小区”页观察实际驻留；两者不是同一项验证。
@@ -45,7 +46,7 @@ NR 状态仍未知时，清锁或整套恢复可能显示“未全部确认”�
 
 APK：`app/build/outputs/apk/debug/app-debug.apk`。用户交付目录为项目外的 `../../../outputs/`。
 
-纯测试入口为 `tests/InputValidatorTest.java`、`tests/SignalHistoryTest.java`、`tests/SnapshotsTest.java` 和 `native/test_qmi.c`。快照测试需要 Android 的 `org.json`；编译为 dex 后可通过 `app_process` 执行。全部纯测试只检查逻辑，不发送基带命令。结果、设备测试和未验证项见 [验证记录](native/VALIDATION.md)；0.2 历史证据见 [历史记录](native/VALIDATION-0.2.md)。
+纯测试入口为 `tests/InputValidatorTest.java`、`tests/SignalHistoryTest.java`、`tests/SimStatusTest.java`、`tests/SnapshotsTest.java` 和 `native/test_qmi.c`。快照测试需要 Android 的 `org.json`；编译为 dex 后可通过 `app_process` 执行。全部纯测试只检查逻辑，不发送基带命令。结果、设备测试和未验证项见 [验证记录](native/VALIDATION.md)；0.2 历史证据见 [历史记录](native/VALIDATION-0.2.md)。
 
 ## 许可
 

@@ -16,6 +16,7 @@ import android.os.Looper;
 import android.provider.Settings;
 import android.telephony.SubscriptionInfo;
 import android.telephony.SubscriptionManager;
+import android.telephony.TelephonyManager;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
@@ -64,6 +65,7 @@ public final class MainActivity extends Activity {
     private View[] pages;
     private boolean ready,resumed;
     private int selectedPage,subscriptionId=SubscriptionManager.INVALID_SUBSCRIPTION_ID;
+    private SimStatus simStatus=SimStatus.PERMISSION_REQUIRED;
     private long consumed=-1;
     private String exportText="";
     private String messageTitle="",messageBody="";
@@ -132,14 +134,26 @@ public final class MainActivity extends Activity {
     private boolean phonePermission(){return checkSelfPermission(Manifest.permission.READ_PHONE_STATE)==PackageManager.PERMISSION_GRANTED;}
     private void loadSubscriptions() {
         if(!ready)return;
+        boolean phone=phonePermission(),denied=false;
         List<SubscriptionInfo> active=null;
-        if(phonePermission())try{SubscriptionManager manager=getSystemService(SubscriptionManager.class);if(manager!=null)active=manager.getActiveSubscriptionInfoList();}catch(SecurityException ignored){}
+        if(phone)try{SubscriptionManager manager=getSystemService(SubscriptionManager.class);if(manager!=null)active=manager.getActiveSubscriptionInfoList();}catch(SecurityException error){denied=true;}
         int previous=subscriptionId;subscriptions.clear();if(active!=null)subscriptions.addAll(active);
+        SimStatus nextStatus=SimStatus.resolve(phone,!subscriptions.isEmpty(),phone&&subscriptions.isEmpty()&&hasReadySim(),denied);
+        if(nextStatus==SimStatus.RESTRICTED&&simStatus!=nextStatus)SESSION.log("SIM 信息读取受限，请在系统权限设置允许获取真实电话信息，并关闭空白授权。");
+        simStatus=nextStatus;
         ArrayList<String> labels=new ArrayList<>();int position=0;for(int i=0;i<subscriptions.size();i++){SubscriptionInfo info=subscriptions.get(i);labels.add("SIM "+(info.getSimSlotIndex()+1)+"  ·  "+info.getCarrierName());if(info.getSubscriptionId()==previous)position=i;}
         int next=subscriptions.isEmpty()?SubscriptionManager.INVALID_SUBSCRIPTION_ID:subscriptions.get(position).getSubscriptionId();
-        if(labels.isEmpty())labels.add(phonePermission()?"没有可用的 SIM 卡":"授权后选择 SIM");
+        if(labels.isEmpty())labels.add(simStatus.emptyLabel);
         simSpinner.setAdapter(ui.adapter(labels.toArray(new String[0])));simSpinner.setSelection(position);
         if(next!=previous)selectSubscription(next);else refreshUi();
+    }
+
+    private boolean hasReadySim() {
+        TelephonyManager phone=getSystemService(TelephonyManager.class);
+        if(phone==null)return false;
+        try{for(int slot=0;slot<phone.getActiveModemCount();slot++)if(phone.getSimState(slot)==TelephonyManager.SIM_STATE_READY)return true;}
+        catch(SecurityException|UnsupportedOperationException ignored){}
+        return false;
     }
 
     private void selectSubscription(int next) {
@@ -153,7 +167,7 @@ public final class MainActivity extends Activity {
 
     private void readState(boolean manual) {
         if(SESSION.running())return;
-        if(!phonePermission()){if(manual)requestPermissionsManually();return;}
+        if(!phonePermission()||simStatus==SimStatus.RESTRICTED){if(manual)requestPermissionsManually();return;}
         if(!SubscriptionManager.isValidSubscriptionId(subscriptionId)){if(manual)toast("请先选择可用 SIM");return;}
         try{int slot=Backend.slotOf(this,subscriptionId);Task task=new Task(subscriptionId,slot,simName(subscriptionId),"读取设置",new ArrayList<>(),null);if(SESSION.start(getApplicationContext(),task))refreshUi();}
         catch(Exception error){if(manual)showMessage("无法读取",message(error));}
@@ -161,7 +175,7 @@ public final class MainActivity extends Activity {
 
     private void confirmApply(String title,String summary,List<String[]> commands,String restoreSnapshot) {
         if(SESSION.running())return;
-        if(!phonePermission()){requestPermissionsManually();return;}
+        if(!phonePermission()||simStatus==SimStatus.RESTRICTED){requestPermissionsManually();return;}
         final int sub=subscriptionId;final int slot;
         try{slot=Backend.slotOf(this,sub);}catch(Exception error){showMessage("无法确定 SIM",message(error));return;}
         final Task task=new Task(sub,slot,simName(sub),title,copyCommands(commands),restoreSnapshot);
@@ -176,6 +190,7 @@ public final class MainActivity extends Activity {
 
     private void chooseRestore() {
         if(SESSION.running())return;
+        if(!phonePermission()||simStatus==SimStatus.RESTRICTED){requestPermissionsManually();return;}
         final int sub=subscriptionId;final int slot;
         try{slot=Backend.slotOf(this,sub);}catch(Exception error){showMessage("无法恢复",message(error));return;}
         new AlertDialog.Builder(this).setTitle("恢复设置").setItems(new String[]{"恢复初始频段与制式，并清除小区锁","全部开放，并清除小区锁"},(dialog,which)->{
@@ -191,7 +206,7 @@ public final class MainActivity extends Activity {
 
     private void refreshUi() {
         if(!ready)return;boolean busy=SESSION.running();Ui.enable(simSpinner,!busy);locks.setState(SESSION.state(subscriptionId));locks.setBusy(busy);cells.setBusy(busy);
-        device.update(SESSION.state(subscriptionId),SESSION.status(subscriptionId),SESSION.lastRead(subscriptionId),busy,SESSION.logs());
+        device.update(SESSION.state(subscriptionId),SESSION.status(subscriptionId),SESSION.lastRead(subscriptionId),busy,SESSION.logs(),simStatus);
     }
 
     private void receive(Completion completion) {
@@ -204,11 +219,17 @@ public final class MainActivity extends Activity {
 
     private void requestPermissionsManually() {
         boolean phone=phonePermission(),fine=checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==PackageManager.PERMISSION_GRANTED;
-        if(phone&&fine){loadSubscriptions();refreshUi();cells.refresh();return;}
+        if(phone&&fine){
+            loadSubscriptions();
+            if(simStatus==SimStatus.RESTRICTED){toast("请允许获取真实电话信息，并关闭空白授权");openPermissionSettings();return;}
+            if(simStatus==SimStatus.NONE){toast("没有可用的 SIM 卡，请检查插卡和启用状态");return;}
+            refreshUi();cells.refresh();return;
+        }
         boolean asked=prefs.getBoolean("permissionsAsked",false);
-        if(asked&&((!phone&&!shouldShowRequestPermissionRationale(Manifest.permission.READ_PHONE_STATE))||(!fine&&!shouldShowRequestPermissionRationale(Manifest.permission.ACCESS_FINE_LOCATION)))){startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,Uri.parse("package:"+getPackageName())));return;}
+        if(asked&&((!phone&&!shouldShowRequestPermissionRationale(Manifest.permission.READ_PHONE_STATE))||(!fine&&!shouldShowRequestPermissionRationale(Manifest.permission.ACCESS_FINE_LOCATION)))){openPermissionSettings();return;}
         prefs.edit().putBoolean("permissionsAsked",true).apply();requestPermissions(new String[]{Manifest.permission.READ_PHONE_STATE,Manifest.permission.ACCESS_COARSE_LOCATION,Manifest.permission.ACCESS_FINE_LOCATION},REQUEST_PERMISSIONS);
     }
+    private void openPermissionSettings(){startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,Uri.parse("package:"+getPackageName())));}
     @Override public void onRequestPermissionsResult(int code,String[] permissions,int[] results){super.onRequestPermissionsResult(code,permissions,results);if(code==REQUEST_PERMISSIONS){loadSubscriptions();refreshUi();cells.setForeground(resumed);maybeReadInitialState();}}
     @Override protected void onResume(){super.onResume();resumed=true;if(ready){loadSubscriptions();refreshUi();cells.setForeground(true);if(messageVisible&&(messageDialog==null||!messageDialog.isShowing()))showMessage(messageTitle,messageBody);SESSION.deliver();maybeReadInitialState();}}
     @Override protected void onPause(){resumed=false;if(cells!=null)cells.setForeground(false);super.onPause();}

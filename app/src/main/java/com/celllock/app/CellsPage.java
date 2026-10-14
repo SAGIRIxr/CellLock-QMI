@@ -273,7 +273,7 @@ final class CellsPage extends ScrollView {
         }
         if (!SubscriptionManager.isValidSubscriptionId(subscriptionId)) {
             updatePolicy();
-            if (!automatic) toast("请先选择可用 SIM");
+            if (!automatic) host.onNeedPermission();
             return;
         }
         if (!locationEnabled()) {
