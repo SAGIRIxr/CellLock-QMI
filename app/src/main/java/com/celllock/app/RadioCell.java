@@ -137,7 +137,7 @@ final class RadioCell {
         return best;
     }
 
-    private int rank() { return (nr ? 4 : 0) + (mapped ? 2 : 0) + (validIdentity(nr, arfcn, pci) ? 1 : 0); }
+    private int rank() { return (mapped ? 4 : 0) + (nr ? 2 : 0) + (validIdentity(nr, arfcn, pci) ? 1 : 0); }
 
     private static int available(int value, int min, int max) {
         return value >= min && value <= max ? value : CellInfo.UNAVAILABLE;
@@ -221,6 +221,17 @@ final class RadioCell {
         for (Map.Entry<String, String> field : details.entrySet()) {
             if (text.length() > 0) text.append(" · ");
             text.append(field.getKey()).append(" ").append(field.getValue());
+        }
+        return text.toString();
+    }
+
+    String signalLabel() {
+        StringBuilder text = new StringBuilder();
+        for (String name : new String[]{"RSRQ", "SINR", "RSSNR", "SNR", "RSSI", "CSI-RSRP", "CSI-RSRQ", "CSI-SINR", "SRXLEV"}) {
+            String value = details.get(name);
+            if (value == null) continue;
+            if (text.length() > 0) text.append(" · ");
+            text.append(name).append(' ').append(value);
         }
         return text.toString();
     }

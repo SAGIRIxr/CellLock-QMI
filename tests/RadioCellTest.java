@@ -63,6 +63,12 @@ public final class RadioCellTest {
         check(RadioCell.serving(List.of(serving, phone(true, 154570, 139, 28, true))).pci == 139, "prefer completed serving identity");
         check(RadioCell.serving(List.of(serving, RadioCell.measured(false, true, 1650, 111, -90, "QMI NAS"))) == serving,
                 "NAS fallback cannot replace partial NR serving data");
+        RadioCell lteServing = phone(false, 1650, 111, 3, true);
+        check(RadioCell.serving(List.of(RadioCell.measured(true, true, 154570, 139, -100, "QMI NAS"), lteServing)) == lteServing,
+                "unmapped NAS NR cannot replace mapped LTE service");
+        check(RadioCell.serving(List.of(lteServing, serving)) == serving, "mapped NR still preferred over mapped LTE");
+        check(kept.signalLabel().equals("RSRQ -12 dB") && kept.details.containsKey("TAC") && kept.detailLabel().contains("MCC"),
+                "neighbor summary hides metadata without deleting original fields");
 
         DiagnosticCells cache = new DiagnosticCells();
         cache.context("1:0", List.of(serving));

@@ -8,7 +8,7 @@ CellLock 是面向已 Root 高通 Android 手机的本地网络设置工具，�
 
 0.4 在 `modifications` 分支本地接入自适应读取，未发布、未上传。正式 Activity 已在小米 M2012K11AC / SM8250 / Android 13 / MIUI 14 验证：电话、精确及近似位置权限全部拒绝、系统定位关闭时仍可取得两卡 Root 电话测量与设备级 NR 邻区；还验证了普通接口、厂商 AppOps 受限回退、Root 拒绝及恢复、旋转和后台退出。条件与限制见 [开发交接文档](#1-先了解当前边界)。
 
-无新增 Root 开关，也无自动授权或定位设置修改。普通订阅受限时依次尝试 Root 电话、UIM 和公开卡状态；小区优先使用有新时间戳的普通接口，受限或只有旧缓存时尝试 Root 电话、严格绑定 NAS，再补充设备级 NR DIAG。UIM-only 不伪造 subId；NAS/DCI 时间或映射未完成核验时不冒充可信服务测量，同频候选资格见下方 0.4.2 说明。Session 写入前后均重新读取真实订阅映射，缓存只用于界面草稿。
+无新增 Root 开关，也无自动授权或定位设置修改。普通订阅受限时依次尝试 Root 电话、UIM 和公开卡状态；小区优先使用有新时间戳的普通接口，受限或只有旧缓存时尝试 Root 电话。0.4.4 起 Root 可用且映射未改变时，即使电话已有完整服务身份也补读严格绑定的 NAS，再补充设备级 NR DIAG。UIM-only 不伪造 subId；NAS/DCI 时间或映射未完成核验时不冒充可信服务测量，同频候选资格见下方 0.4.2 说明。Session 写入前后均重新读取真实订阅映射，缓存只用于界面草稿。
 
 已通过：读取解析 364 项（含既有双卡原始回包和 30 个 NR 日志）、输入 46 项、历史 22 项、SIM 状态 8 项、快照 136 项及原生 mock 协议 105 项；构建与 lint 通过（0 errors / 25 warnings）。正常 DCI 会话能退出、后台无读取子进程或临时目录残留；厂商初始化挂死、异常注销及其他设备适配尚未真机演练。
 
@@ -159,10 +159,12 @@ $sdk = $env:ANDROID_SDK_ROOT
 $ndk = Join-Path $sdk 'ndk/30.0.14904198'
 Set-Content -LiteralPath local.properties -Value ('sdk.dir=' + $sdk.Replace('\','/'))
 ./build-native.ps1 -Ndk $ndk -BuildTests
-./gradlew.bat assembleDebug lintDebug
+./gradlew.bat clean assembleDebug lintDebug
 ```
 
 APK 在 `app/build/outputs/apk/debug/app-debug.apk`。首次安装使用开发签名；继续更新需保持签名，否则不能覆盖旧安装。卸载会丢失 App 保存的初始快照，应先恢复并导出记录。
+
+日常开发可省略 `clean`。交付前完整重打包，避免 APK 增量更新留下已失效条目的空隙；不要通过移除读取组件来缩减这类打包空间。
 
 ```powershell
 adb devices
@@ -179,7 +181,17 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 可选 `-Captures <本地 device-paths 目录>` 额外验证既有脱敏真机数据。固定测试时钟只在 `tests/host/` 使用，不打入 APK；此测试不代替系统时钟、权限或 Binder 的真机回归。
 
-`ReadingPolicyTest` 覆盖初次 / 缓存 / 连续无包的 DIAG 入口选择；`RadioCellTest` 包含 n77/n78 重叠频段及显示 / 填表一致性；`MeasurementDecoderTest` 核对 NAS 标识的端序、占位值和邻区归属边界。`native/test_read` 与 `test_diag` 都只做内存自检，不发送基带请求。
+`ReadingPolicyTest` 覆盖 DIAG 入口选择，以及电话已有服务身份时 NAS 补入异频邻区、去重、部分字段与冲突身份保留；`RadioCellTest` 包含 n77/n78 重叠频段、显示 / 填表一致性及可信服务优先；`MeasurementDecoderTest` 核对 NAS 标识的端序、占位值和邻区归属边界。`native/test_read` 与 `test_diag` 都只做内存自检，不发送基带请求。
+
+`UiFlowTest` 在 Android instrumentation 中实例化真实页面，用记录命令的 Host 检查重排后的 NR / LTE 小区、频点、解锁与频段参数，不执行命令；还检查表单重建、精简字段以及 320dp / 130% 字体下的信号文字。先用同一默认 debug 签名安装当前 APK，再运行下列命令；脚本使用 SDK 35 / Build Tools 34.0.0 和本机默认 debug keystore，临时测试包运行后卸载，不打入正式 APK。仅连接目标设备，测试会停止目标应用：
+
+```powershell
+./tests/run-ui.ps1 -Sdk $env:ANDROID_SDK_ROOT
+```
+
+0.4.4 的页面副标题、SIM 来源后缀、当前连接详情及采集来源说明已隐藏；邻区保留来源和信号质量，底层 `details` 与诊断能力保持。锁定页按制式 / 频段 / 小区、NR / LTE 排序，读取失败仍显示未知。NAS 仅补充新观测，不覆写已有电话数据；相同制式、频点、PCI 且身份不冲突时去重，纯频点提示不重复已有小区。服务选择先比较可信映射，再比较 NR / LTE 和身份完整度，避免补读 NR 抢占已映射 LTE。
+
+0.4.5 邻区隐藏系统 / Root 电话来源的可见文字与无障碍来源播报，仍保留原始数据用于诊断。小区采集进行中或被设置任务暂停时显示提示；新鲜观测不因普通刷新禁用，过期观测继续拒绝填表。Android 检查补入真实 Root 电话邻区夹具，以及离页后观测变旧、回页禁用和读取 / 设置暂停提示，避免仅用 DIAG 夹具漏测来源。
 
 `PermissionFlowTest` 在 Android runtime 调用当前 APK 的权限判断及引导方法，用内存偏好与测试上下文检查分步授权和空结果不再手动重读，不调用系统授权或改变设置。完成 APK 构建后可单独运行（测试类不打入 APK）：
 

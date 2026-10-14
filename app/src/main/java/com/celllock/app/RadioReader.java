@@ -220,9 +220,12 @@ final class RadioReader {
                     if (cells.isEmpty() && result.has("error")) status = result.optString("error");
                 } catch (Exception ignored) { }
                 if (!current(workToken)) return;
-                if (RootShell.available() && !changed && cells.stream().noneMatch(RadioCell::hasMappedIdentity) && sim != null && sim.slot <= 1) try {
+                if (RootShell.available() && !changed && sim != null && sim.slot <= 1) try {
                     List<RadioCell> measured = MeasurementDecoder.nas(nativeRead("libcelllock_read.so", "cells " + sim.slot, 8), sim.slot);
-                    if (!measured.isEmpty()) { appendReadings(cells, measured); status = "QMI NAS 观测"; }
+                    if (!measured.isEmpty()) {
+                        status = cells.isEmpty() ? "QMI NAS 观测" : status + " · NAS 补充";
+                        supplementReadings(cells, measured);
+                    }
                 } catch (Exception ignored) { }
                 if (!current(workToken)) return;
                 if (changed) diagnosticCells.clear();
@@ -272,6 +275,16 @@ final class RadioReader {
             cells.removeIf(old -> old.nr == next.nr && old.arfcn == next.arfcn && old.pci == next.pci
                     && old.identity == next.identity && old.source.equals(next.source));
             cells.add(next);
+        }
+    }
+
+    static void supplementReadings(List<RadioCell> cells, List<RadioCell> measured) {
+        for (RadioCell next : measured) {
+            boolean duplicate = next.arfcn != CellInfo.UNAVAILABLE && cells.stream().anyMatch(old -> old.nr == next.nr && old.arfcn == next.arfcn
+                    && (old.pci == next.pci && next.pci != CellInfo.UNAVAILABLE
+                        || next.pci == CellInfo.UNAVAILABLE && !next.hasSignal() && next.identity < 0 && next.details.isEmpty())
+                    && (old.identity < 0 || next.identity < 0 || old.identity == next.identity));
+            if (!duplicate) cells.add(next);
         }
     }
 }

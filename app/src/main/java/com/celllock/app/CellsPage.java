@@ -47,10 +47,10 @@ final class CellsPage extends ScrollView {
         readCells(true);
     };
     private Runnable timeout;
-    private int subscriptionId = SubscriptionManager.INVALID_SUBSCRIPTION_ID, generation;
+    private int subscriptionId = SubscriptionManager.INVALID_SUBSCRIPTION_ID, generation, neighborTotal;
     private boolean foreground, busy, disposed, reading, scheduled, cached;
     private RadioCell serving;
-    private TextView autoStatus, rat, servingCaption, signal, quality, reference, servingDetails;
+    private TextView autoStatus, rat, servingCaption, signal, quality, reference;
     private TextView arfcn, pci, band, observationStatus, neighborCount, trendRange, trendStatus;
     private Button refreshButton, targetButton;
     private LinearLayout neighbors;
@@ -117,7 +117,8 @@ final class CellsPage extends ScrollView {
         strength.addView(bars, new LinearLayout.LayoutParams(ui.dp(39), ui.dp(34)));
         ui.gap(strength, 5);
         quality = ui.text("信号未知", 11, Ui.MUTED);
-        strength.addView(quality);
+        quality.setSingleLine(true);
+        strength.addView(quality, new LinearLayout.LayoutParams(-2, -2));
         readingRow.addView(strength);
         hero.addView(readingRow);
         reference = ui.text("RSRP · 强弱为应用参考", 10, Ui.MUTED);
@@ -130,9 +131,6 @@ final class CellsPage extends ScrollView {
         pci = metric(metrics, "PCI");
         band = metric(metrics, "频段");
         hero.addView(metrics);
-        ui.gap(hero, 8);
-        servingDetails = ui.text("", 10, Ui.MUTED);
-        hero.addView(servingDetails);
         ui.gap(hero, 13);
         targetButton = ui.button("用作锁定目标", true);
         hero.addView(targetButton, ui.fill(41));
@@ -170,8 +168,6 @@ final class CellsPage extends ScrollView {
         neighbors = ui.column();
         neighbors.setBackground(ui.shape(Ui.CARD, 20, 0));
         page.addView(neighbors, ui.fill(-2));
-        ui.gap(page, 13);
-        page.addView(ui.caption("邻区合并最近 15 秒；与服务频段、频点相同的观测可填入所选 SIM 的锁定目标。"));
     }
 
     private TextView metric(LinearLayout parent, String label) {
@@ -258,6 +254,11 @@ final class CellsPage extends ScrollView {
         Ui.enable(targetButton, !disposed && !busy && serving != null && serving.hasTarget(serving));
         for (Map.Entry<View,RadioCell> entry : targetViews.entrySet())
             Ui.enable(entry.getKey(), !disposed && !busy && entry.getValue().hasTarget(serving));
+        neighborCount.setText(neighborTotal + " 个" + (busy ? " · 已暂停" : reading ? " · 更新中" : ""));
+        if (hasObservations && (busy || reading)) {
+            observationStatus.setText(busy ? "正在读取或应用设置 · 小区采集暂停" : "正在更新小区观测 · 旧观测可能已过期");
+            observationStatus.setVisibility(VISIBLE);
+        }
     }
 
     private void readCells(boolean automatic) {
@@ -306,7 +307,6 @@ final class CellsPage extends ScrollView {
     private void display(RadioReader.Observation observation) {
         List<RadioCell> cells=observation.cells;
         hasObservations=true;receivedAt=SystemClock.elapsedRealtime();
-        int nrCount=0;for(RadioCell cell:cells)if(cell.nr)nrCount++;
         serving = RadioCell.serving(cells);
         host.onServingChanged(serving);
         recordSignal();
@@ -323,14 +323,15 @@ final class CellsPage extends ScrollView {
             }
             addNeighbor(cell.withServingBand(serving));
         }
+        neighborTotal = count;
         neighborCount.setText(count + " 个");
         if (count == 0) emptyNeighbors("本次没有更多可见小区");
-        observationStatus.setText(observation.status+" · LTE "+(cells.size()-nrCount)+" / NR "+nrCount+" · "+sampleAge(serving));
+        observationStatus.setVisibility(GONE);
     }
 
     private void renderServing() {
         rat.setText(serving == null ? "未注册" : serving.nr ? "5G NR" : "LTE");
-        servingCaption.setText(serving == null ? "未读到可信服务小区" : serving.mapped ? "当前服务小区 · "+serving.source : "服务角色待核实 · "+serving.source);
+        servingCaption.setText(serving == null ? "未读到可信服务小区" : serving.mapped ? "当前服务小区" : "服务角色待核实");
         if (serving != null && !RadioCell.validIdentity(serving.nr, serving.arfcn, serving.pci))
             servingCaption.setText("当前服务信号 · 小区身份不完整");
         int value = serving == null ? CellInfo.UNAVAILABLE : serving.rsrp;
@@ -345,7 +346,6 @@ final class CellsPage extends ScrollView {
         arfcn.setText(serving == null ? "—" : number(serving.arfcn));
         pci.setText(serving == null ? "—" : number(serving.pci));
         band.setText(serving == null ? "—" : serving.bandLabel());
-        servingDetails.setText(serving == null ? "" : serving.detailLabel());
         Ui.enable(targetButton, !disposed && !busy && serving != null && serving.hasTarget(serving));
     }
 
@@ -363,14 +363,24 @@ final class CellsPage extends ScrollView {
         ui.gap(identity, 4);
         identity.addView(ui.text("频点 " + number(cell.arfcn)
                 + (cell.registered&&cell.mapped ? " · 已注册" : cell.band > 0 ? " · " + cell.bandLabel() : ""), 11, Ui.MUTED));
-        if(!cell.detailLabel().isEmpty())identity.addView(ui.text(cell.detailLabel(),10,Ui.MUTED));
-        if(!cell.source.equals("系统"))identity.addView(ui.text(cell.source
-                + (cell.hasTarget(serving) && !cell.hasTarget() ? " · 同频候选" : ""),10,Ui.MUTED));
+        String metrics = cell.signalLabel();
+        if(!metrics.isEmpty())identity.addView(ui.text(metrics,10,Ui.MUTED));
+        String source = cell.source.replace(" · SIM 归属未知", "");
+        if(source.equals("系统") || source.equals("Root 电话"))source = "";
+        if(!source.isEmpty())identity.addView(ui.text(source,10,Ui.MUTED));
         item.addView(identity, ui.weight(-2));
         LinearLayout strength = ui.column();
         strength.setGravity(Gravity.END);
-        strength.addView(ui.text(cell.hasSignal() ? cell.rsrp + " dBm · " + SignalHistory.strength(cell.rsrp)
-                : "信号未知", 11, SignalHistory.color(cell.rsrp)));
+        TextView strengthText = ui.text(cell.hasSignal() ? cell.rsrp + " dBm"
+                : "信号未知", 11, SignalHistory.color(cell.rsrp));
+        strengthText.setSingleLine(true);
+        strengthText.setGravity(Gravity.END);
+        strength.addView(strengthText, new LinearLayout.LayoutParams(-2, -2));
+        if (cell.hasSignal()) {
+            TextView label = ui.text(SignalHistory.strength(cell.rsrp), 11, SignalHistory.color(cell.rsrp));
+            label.setSingleLine(true);
+            strength.addView(label, new LinearLayout.LayoutParams(-2, -2));
+        }
         ui.gap(strength, 7);
         strength.addView(new SignalChartView.StrengthBar(activity, cell.rsrp),
                 new LinearLayout.LayoutParams(ui.dp(77), ui.dp(4)));
@@ -380,7 +390,7 @@ final class CellsPage extends ScrollView {
                 new LinearLayout.LayoutParams(ui.dp(12), ui.dp(16)));
         item.setContentDescription((cell.nr ? "5G" : "LTE") + "小区，频点" + number(cell.arfcn)
                 + "，PCI" + number(cell.pci) + "，" + (cell.hasSignal() ? cell.rsrp + " dBm" : "信号未知")
-                + "，来源 " + cell.source + "，" + cell.detailLabel() + (cell.hasTarget(serving)?"，填入目标":"，仅供观测"));
+                + (source.isEmpty() ? "" : "，来源 " + source) + "，" + cell.detailLabel() + (cell.hasTarget(serving)?"，填入目标":"，仅供观测"));
         if (cell.hasTarget(serving)) {
             targetViews.put(item,cell);
             item.setOnClickListener(v -> selectTarget(cell));
@@ -403,16 +413,18 @@ final class CellsPage extends ScrollView {
         targetViews.clear();
         neighbors.removeAllViews();
         emptyNeighbors(message);
-        neighborCount.setText("0 个");
+        neighborTotal=0;neighborCount.setText("0 个");
         observationStatus.setText(message);
+        observationStatus.setVisibility(VISIBLE);
         renderTrend();
     }
 
     private void showMissing(String message) {
         if(!hasObservations){showEmpty(message);return;}
         history.markGap();renderTrend();
-        targetViews.clear();neighbors.removeAllViews();emptyNeighbors(message);neighborCount.setText("0 个");
+        targetViews.clear();neighbors.removeAllViews();emptyNeighbors(message);neighborTotal=0;neighborCount.setText("0 个");
         observationStatus.setText("上次观测 · 接收 "+Math.max(0,(SystemClock.elapsedRealtime()-receivedAt)/1000)+" 秒前 · "+message);
+        observationStatus.setVisibility(VISIBLE);
         host.onServingChanged(serving);
     }
 

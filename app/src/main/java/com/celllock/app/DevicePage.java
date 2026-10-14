@@ -114,10 +114,6 @@ final class DevicePage extends ScrollView {
         clearButton.setOnClickListener(v -> host.onClearLogs());
         recordActions.addView(clearButton, ui.weight(40));
         records.addView(recordActions);
-        ui.gap(page, 22);
-        TextView free = ui.text("全部功能免费 · 无会员 · 无广告", 12, Ui.GREEN);
-        free.setGravity(Gravity.CENTER);
-        page.addView(free);
         update(null, "", "", false, null, SimStatus.PERMISSION_REQUIRED);
     }
 

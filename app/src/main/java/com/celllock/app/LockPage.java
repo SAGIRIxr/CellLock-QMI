@@ -59,10 +59,10 @@ final class LockPage extends ScrollView {
         LinearLayout page=ui.column();page.setPadding(ui.dp(20),ui.dp(20),ui.dp(20),ui.dp(24));
         page.setFocusableInTouchMode(true);addView(page);
         buildState(page);ui.gap(page,17);
-        sectionTabs=ui.new Segmented(new String[]{"小区","频段","制式"},index->showSection());
+        sectionTabs=ui.new Segmented(new String[]{"制式","频段","小区"},index->showSection());
         controls.add(sectionTabs);page.addView(sectionTabs,ui.fill(-2));ui.gap(page,15);
         for(int i=0;i<sections.length;i++){sections[i]=ui.column();page.addView(sections[i],ui.fill(-2));}
-        buildCell(sections[0]);buildBands(sections[1]);buildRat(sections[2]);
+        buildRat(sections[0]);buildBands(sections[1]);buildCell(sections[2]);
         ui.gap(page,20);restoreButton=ui.dangerButton("恢复设置");restoreButton.setOnClickListener(v->{if(!busy)host.onRestore();});
         controls.add(restoreButton);page.addView(restoreButton,ui.fill(48));
         setState(null);showSection();
@@ -73,9 +73,9 @@ final class LockPage extends ScrollView {
         refresh=ui.button("刷新",false);refresh.setTextSize(12);refresh.setOnClickListener(v->{if(!busy)host.onRefresh();});
         controls.add(refresh);heading.addView(refresh,new LinearLayout.LayoutParams(ui.dp(65),ui.dp(35)));card.addView(heading);
         ui.gap(card,9);
-        lteCellStatus=statusRow(card,"LTE 小区");nrCellStatus=statusRow(card,"5G 小区");
+        nrCellStatus=statusRow(card,"5G 小区");lteCellStatus=statusRow(card,"LTE 小区");
         ui.gap(card,5);card.addView(ui.divider(),ui.fill(1));ui.gap(card,5);
-        lteBandStatus=statusRow(card,"LTE 频段");nrBandStatus=statusRow(card,"5G 频段");ratStatus=statusRow(card,"网络制式");
+        nrBandStatus=statusRow(card,"5G 频段");lteBandStatus=statusRow(card,"LTE 频段");ratStatus=statusRow(card,"网络制式");
         ui.gap(card,8);stateCaption=ui.text("首次进入时读取当前 SIM 的设置。",11,Ui.MUTED);card.addView(stateCaption);
     }
 
@@ -86,7 +86,7 @@ final class LockPage extends ScrollView {
     }
 
     private void buildCell(LinearLayout parent) {
-        cellTabs=ui.new Segmented(new String[]{"LTE","5G NR"},index->updateCellUi());controls.add(cellTabs);parent.addView(cellTabs,ui.fill(-2));ui.gap(parent,13);
+        cellTabs=ui.new Segmented(new String[]{"5G NR","LTE"},index->updateCellUi());controls.add(cellTabs);parent.addView(cellTabs,ui.fill(-2));ui.gap(parent,13);
         LinearLayout card=ui.card(parent);
         lteFields=ui.column();LinearLayout lteRow=ui.row();lteArfcn=ui.labeledInput(lteRow,"EARFCN","0–65535");ui.gap(lteRow,12);ltePci=ui.labeledInput(lteRow,"PCI","0–503");lteFields.addView(lteRow);card.addView(lteFields);
         nrFields=ui.column();nrKindTabs=ui.new Segmented(new String[]{"锁小区 · PCI","锁频点 · ARFCN"},index->updateCellUi());controls.add(nrKindTabs);nrFields.addView(nrKindTabs,ui.fill(-2));ui.gap(nrFields,15);
@@ -98,12 +98,12 @@ final class LockPage extends ScrollView {
         for(EditText input:new EditText[]{lteArfcn,ltePci,nrArfcn,nrPci,nrBand}){input.setSaveEnabled(false);controls.add(input);}scs.setSaveEnabled(false);controls.add(scs);
         nrArfcn.addTextChangedListener(watcher(()->suggestNrParameters()));
         nrBand.addTextChangedListener(watcher(()->{if(changingFields)return;int band=InputValidator.parse(value(nrBand),512);if(band>0)selectScs(Bands.defaultScs(band));}));
-        ui.gap(parent,9);cellApply=ui.button("锁定小区",true);cellApply.setOnClickListener(v->applyCell());controls.add(cellApply);parent.addView(cellApply,ui.fill(52));ui.gap(parent,9);
-        cellClear=ui.button("解除 LTE 小区锁定",false);cellClear.setOnClickListener(v->{if(!busy){boolean nr=cellTabs.selected()==1;apply("解除小区锁定","解除当前 SIM 的 "+(nr?"5G":"LTE")+" 小区与频点锁定。",new String[]{"cell-clear",nr?"nr":"lte"});}});controls.add(cellClear);parent.addView(cellClear,ui.fill(47));
+        ui.gap(parent,9);cellApply=ui.button("锁定",true);cellApply.setOnClickListener(v->applyCell());controls.add(cellApply);parent.addView(cellApply,ui.fill(52));ui.gap(parent,9);
+        cellClear=ui.button("清除解锁",false);cellClear.setOnClickListener(v->{if(!busy){boolean nr=cellTabs.selected()==0;apply("解除小区锁定","解除当前 SIM 的 "+(nr?"5G":"LTE")+" 小区与频点锁定。",new String[]{"cell-clear",nr?"nr":"lte"});}});controls.add(cellClear);parent.addView(cellClear,ui.fill(47));
     }
 
     private void buildBands(LinearLayout parent) {
-        bandTabs=ui.new Segmented(new String[]{"LTE","5G NR","2G · 3G"},index->renderBandChoices());controls.add(bandTabs);parent.addView(bandTabs,ui.fill(-2));ui.gap(parent,12);
+        bandTabs=ui.new Segmented(new String[]{"5G NR","LTE","2G · 3G"},index->renderBandChoices());controls.add(bandTabs);parent.addView(bandTabs,ui.fill(-2));ui.gap(parent,12);
         nrTargetTabs=ui.new Segmented(new String[]{"SA + NSA","仅 SA","仅 NSA"},index->renderBandChoices());controls.add(nrTargetTabs);parent.addView(nrTargetTabs,ui.fill(-2));
         LinearLayout card=ui.card(parent);LinearLayout heading=ui.row();heading.addView(ui.title("选择频段"),ui.weight(-2));bandCount=ui.text("",12,Ui.GREEN);heading.addView(bandCount);card.addView(heading);ui.gap(card,7);
         bandHint=ui.caption("读取后显示本机支持的频段。");card.addView(bandHint);ui.gap(card,12);
@@ -143,7 +143,7 @@ final class LockPage extends ScrollView {
 
     void fillTarget(RadioCell cell) {
         if(busy||cell==null||!cell.hasTarget(serving))return;
-        sectionTabs.select(0);cellTabs.select(cell.nr?1:0);changingFields=true;
+        sectionTabs.select(2);cellTabs.select(cell.nr?0:1);changingFields=true;
         if(cell.nr){nrKindTabs.select(0);nrArfcn.setText(String.valueOf(cell.arfcn));nrPci.setText(String.valueOf(cell.pci));int band=cell.targetBand(serving);if(band<=0)band=Bands.nrBandForArfcn(cell.arfcn,state==null?null:state.hwNr);nrBand.setText(band>0?String.valueOf(band):"");if(band>0)selectScs(Bands.defaultScs(band));nrHint.setText(band>0?"已带入 n"+band+"，子载波间隔仍可调整。":"请确认频段与子载波间隔。");}
         else{lteArfcn.setText(String.valueOf(cell.arfcn));ltePci.setText(String.valueOf(cell.pci));}
         if(cell.nr&&!cell.mapped)nrHint.setText("已填入所选 SIM 的同频候选，请确认频段与子载波间隔。");
@@ -177,11 +177,11 @@ final class LockPage extends ScrollView {
     }
 
     private int nrGroup(){return nrTargetTabs.selected()==1?NR_SA:nrTargetTabs.selected()==2?NR_NSA:NR_BOTH;}
-    private int[] visibleGroups(){return bandTabs.selected()==0?new int[]{LTE}:bandTabs.selected()==1?new int[]{nrGroup()}:new int[]{GSM,WCDMA};}
+    private int[] visibleGroups(){return bandTabs.selected()==0?new int[]{nrGroup()}:bandTabs.selected()==1?new int[]{LTE}:new int[]{GSM,WCDMA};}
     private boolean present(BitSet set){return set!=null&&!set.isEmpty();}
 
     private void renderBandChoices() {
-        if(bandChoices==null)return;bandChoices.removeAllViews();bandChips.clear();boolean nr=bandTabs.selected()==1;nrTargetTabs.setVisibility(nr?VISIBLE:GONE);
+        if(bandChoices==null)return;bandChoices.removeAllViews();bandChips.clear();boolean nr=bandTabs.selected()==0;nrTargetTabs.setVisibility(nr?VISIBLE:GONE);
         if(state==null||!state.hwKnown){bandChoices.addView(ui.caption("先刷新，读取硬件支持的频段。"));bandHint.setText("只显示本机硬件支持的频段。");bandCount.setText("");updateEnabled();return;}
         boolean any=false;for(int group:visibleGroups()){
             BitSet hardware=hardwareBands(group);if(!present(hardware))continue;any=true;
@@ -205,7 +205,7 @@ final class LockPage extends ScrollView {
 
     private void editVisibleBands(int action) {
         if(busy)return;
-        if(action==1){int group=bandTabs.selected()==0?LTE:nrGroup();if(serving==null||serving.band<=0||bandTabs.selected()==2||serving.nr!=(bandTabs.selected()==1)||!present(hardwareBands(group))||!hardwareBands(group).get(serving.band)){host.onMessage("当前频段不可用","小区页尚未读到此制式的受支持服务频段。");return;}bandDrafts[group]=new BitSet();bandDrafts[group].set(serving.band);bandEdited[group]=true;}
+        if(action==1){int group=bandTabs.selected()==0?nrGroup():LTE;if(serving==null||serving.band<=0||bandTabs.selected()==2||serving.nr!=(bandTabs.selected()==0)||!present(hardwareBands(group))||!hardwareBands(group).get(serving.band)){host.onMessage("当前频段不可用","小区页尚未读到此制式的受支持服务频段。");return;}bandDrafts[group]=new BitSet();bandDrafts[group].set(serving.band);bandEdited[group]=true;}
         else for(int group:visibleGroups()){BitSet hardware=hardwareBands(group);if(hardware==null)continue;bandDrafts[group]=action==0?(BitSet)hardware.clone():new BitSet();bandEdited[group]=true;}
         renderBandChoices();
     }
@@ -258,7 +258,7 @@ final class LockPage extends ScrollView {
     }
 
     private void applyCell() {
-        if(busy)return;boolean nr=cellTabs.selected()==1,freq=nr&&nrKindTabs.selected()==1;int spacing=SCS[Math.max(0,scs.getSelectedItemPosition())];
+        if(busy)return;boolean nr=cellTabs.selected()==0,freq=nr&&nrKindTabs.selected()==1;int spacing=SCS[Math.max(0,scs.getSelectedItemPosition())];
         String error=nr?(freq?InputValidator.nrFrequency(value(nrArfcn),spacing):InputValidator.nrCell(value(nrArfcn),value(nrPci),value(nrBand),spacing)):InputValidator.lteCell(value(lteArfcn),value(ltePci));
         if(error!=null){host.onMessage("检查目标参数",error);return;}
         if(!nr)apply("锁定 LTE 小区","EARFCN "+value(lteArfcn)+" / PCI "+value(ltePci),new String[]{"cell-lte",value(lteArfcn),value(ltePci)});
@@ -278,8 +278,7 @@ final class LockPage extends ScrollView {
 
     private void showSection(){for(int i=0;i<sections.length;i++)sections[i].setVisibility(sectionTabs.selected()==i?VISIBLE:GONE);updateEnabled();}
     private void updateCellUi() {
-        boolean nr=cellTabs.selected()==1,freq=nrKindTabs.selected()==1;lteFields.setVisibility(nr?GONE:VISIBLE);nrFields.setVisibility(nr?VISIBLE:GONE);pciColumn.setVisibility(freq?GONE:VISIBLE);nrBandColumn.setVisibility(freq?GONE:VISIBLE);
-        cellApply.setText(nr&&freq?"锁定 5G 频点":"锁定目标小区");cellClear.setText("解除 "+(nr?"5G":"LTE")+" 小区锁定");
+        boolean nr=cellTabs.selected()==0,freq=nrKindTabs.selected()==1;lteFields.setVisibility(nr?GONE:VISIBLE);nrFields.setVisibility(nr?VISIBLE:GONE);pciColumn.setVisibility(freq?GONE:VISIBLE);nrBandColumn.setVisibility(freq?GONE:VISIBLE);
         nrUnknownHint.setVisibility(nr&&state!=null&&!state.nrKnown?VISIBLE:GONE);nrUnknownHint.setText("5G 小区状态未完整返回，写入后会尝试回读确认。");updateEnabled();
     }
     private void updateEnabled() {
@@ -287,7 +286,7 @@ final class LockPage extends ScrollView {
         for(View control:controls)Ui.enable(control,!busy);for(View chip:bandChips)Ui.enable(chip,!busy);for(Button preset:presetButtons)Ui.enable(preset,!busy);
         refresh.setText(busy?"处理中":"刷新");boolean available=false,hasSelection=false;for(int group:visibleGroups()){available|=present(hardwareBands(group));hasSelection|=present(bandDrafts[group]);}
         Ui.enable(bandAll,!busy&&available);Ui.enable(bandNone,!busy&&available);Ui.enable(bandApply,!busy&&available&&hasSelection);
-        int group=bandTabs.selected()==0?LTE:nrGroup();boolean current=bandTabs.selected()!=2&&serving!=null&&serving.band>0&&serving.nr==(bandTabs.selected()==1)&&present(hardwareBands(group))&&hardwareBands(group).get(serving.band);Ui.enable(bandCurrent,!busy&&current);
+        int group=bandTabs.selected()==0?nrGroup():LTE;boolean current=bandTabs.selected()!=2&&serving!=null&&serving.band>0&&serving.nr==(bandTabs.selected()==0)&&present(hardwareBands(group))&&hardwareBands(group).get(serving.band);Ui.enable(bandCurrent,!busy&&current);
         int rat=chosenRat>=0?chosenRat:state!=null&&state.prefKnown?state.rat:0;boolean nr=(rat&Rat.NR)!=0;Ui.enable(nrModeTabs,!busy&&nr&&((hardwareRat()&Rat.NR)!=0));nrModeHint.setText(nr?chosenNrMode<0?"当前组网未知，请选择。":"应用制式时同时使用此组网设置。":"所选制式包含 5G 时可用。");
         Ui.enable(ratApply,!busy&&hardwareRat()!=0&&(ratArg!=null||(nr&&nrModeEdited)));
     }
