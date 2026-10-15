@@ -81,6 +81,18 @@ public final class UiFlowTest extends Instrumentation {
         check(UiFlowTest.<TextView>field(page,"nrCellStatus").getText().toString().equals("未知"),"unknown cannot imply unlocked");
         check(UiFlowTest.<Button>field(page,"cellApply").getText().toString().equals("锁定")&&UiFlowTest.<Button>field(page,"cellClear").getText().toString().equals("清除解锁"),"short labels");
         RadioCell nr=target(true),lte=target(false);page.setServingCell(nr);page.fillTarget(nr);
+        for(RadioCell target:List.of(nr,lte))for(String name:new String[]{"MCC","MNC","PLMN"}) {
+            RadioCell primary=RadioCell.parse(target.json().put("rsrp",android.telephony.CellInfo.UNAVAILABLE),"Root 电话")
+                    .withDetails(Map.of(name,"001"));
+            RadioCell other=RadioCell.measured(target.nr,true,target.arfcn,target.pci,-95,"QMI NAS")
+                    .withDetails(Map.of(name,"002","补充来源","QMI SYS / RF"));
+            List<RadioCell> readings=new ArrayList<>(List.of(primary));
+            RadioReader.supplementReadings(readings,List.of(other));
+            check(readings.equals(List.of(primary,other))&&!primary.hasSignal()&&!other.hasTarget(primary),"different operator must remain separate on Android: "+name);
+            readings=new ArrayList<>(List.of(primary));
+            RadioReader.supplementReadings(readings,List.of(other.withDetails(Map.of(name,"001","补充来源","QMI SYS / RF"))));
+            check(readings.size()==1&&readings.get(0).rsrp==-95,"matching operator still supplements on Android: "+name);
+        }
         check(section.selected()==2&&cell.selected()==0,"NR target opens NR cell form");
         command(page,host,"cellApply","cell-nr","154570","139","28","15");
         command(page,host,"cellClear","cell-clear","nr");

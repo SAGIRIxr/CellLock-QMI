@@ -162,8 +162,7 @@ final class MeasurementDecoder {
             return !(identity >= 0 && cell.identity >= 0 && identity != cell.identity
                     || pci != CellInfo.UNAVAILABLE && cell.pci != CellInfo.UNAVAILABLE && pci != cell.pci
                     || arfcn != CellInfo.UNAVAILABLE && cell.arfcn != CellInfo.UNAVAILABLE && arfcn != cell.arfcn
-                    || details.containsKey("TAC") && cell.details.containsKey("TAC")
-                        && !details.get("TAC").equals(cell.details.get("TAC")));
+                    || RadioCell.conflictingIdentityDetails(details, cell.details));
         }
     }
 
@@ -350,17 +349,25 @@ final class MeasurementDecoder {
 
     private static Map<String, String> plmn(Bytes b) {
         StringBuilder digits = new StringBuilder();
+        StringBuilder packed = new StringBuilder();
         boolean valid = true;
         for (int i = 0; i < 3; i++) {
             int value = b.u8();
             for (int shift = 0; shift <= 4; shift += 4) {
                 int digit = value >> shift & 15;
+                packed.append(Character.forDigit(digit, 16));
                 if (digit <= 9) digits.append(digit);
                 else if (digit != 15) valid = false;
             }
         }
         Map<String, String> details = new LinkedHashMap<>();
-        if (valid && digits.length() >= 5 && !digits.toString().startsWith("000")) details.put("PLMN", digits.toString());
+        if (valid && digits.length() >= 5 && !digits.toString().startsWith("000")) {
+            details.put("PLMN", digits.toString());
+            if (packed.toString().matches("[0-9]{3}[0-9f][0-9]{2}")) {
+                details.put("MCC", packed.substring(0, 3));
+                details.put("MNC", packed.substring(4, 6) + (packed.charAt(3) == 'f' ? "" : packed.substring(3, 4)));
+            }
+        }
         return details;
     }
 

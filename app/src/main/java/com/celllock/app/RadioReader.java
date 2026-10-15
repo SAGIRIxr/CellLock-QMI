@@ -292,7 +292,8 @@ final class RadioReader {
             boolean duplicate = next.arfcn != CellInfo.UNAVAILABLE && cells.stream().anyMatch(old -> old.nr == next.nr && old.arfcn == next.arfcn
                     && (old.pci == next.pci && next.pci != CellInfo.UNAVAILABLE
                         || next.pci == CellInfo.UNAVAILABLE && !next.hasSignal() && next.identity < 0 && next.details.isEmpty())
-                    && (old.identity < 0 || next.identity < 0 || old.identity == next.identity));
+                    && (old.identity < 0 || next.identity < 0 || old.identity == next.identity)
+                    && !RadioCell.conflictingIdentityDetails(old.details, next.details));
             if (!duplicate) cells.add(next);
         }
     }

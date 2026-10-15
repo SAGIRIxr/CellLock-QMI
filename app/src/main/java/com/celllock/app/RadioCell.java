@@ -160,10 +160,14 @@ final class RadioCell {
         if (other == null || nr != other.nr || arfcn != other.arfcn || pci != other.pci
                 || !validIdentity(nr, arfcn, pci) || band > 0 && other.band > 0 && band != other.band
                 || identity >= 0 && other.identity >= 0 && identity != other.identity) return false;
+        return !conflictingIdentityDetails(details, other.details);
+    }
+
+    static boolean conflictingIdentityDetails(Map<String, String> first, Map<String, String> second) {
         for (String name : new String[]{"TAC", "MCC", "MNC", "PLMN"})
-            if (details.containsKey(name) && other.details.containsKey(name)
-                    && !details.get(name).equals(other.details.get(name))) return false;
-        return true;
+            if (first.containsKey(name) && second.containsKey(name)
+                    && !first.get(name).equals(second.get(name))) return true;
+        return false;
     }
 
     boolean isNeighborOf(RadioCell serving) {
@@ -284,7 +288,7 @@ final class RadioCell {
                 || !recentMeasurement() || !next.recentMeasurement()
                 || identity >= 0 && next.identity >= 0 && identity != next.identity
                 || pci != CellInfo.UNAVAILABLE && next.pci != CellInfo.UNAVAILABLE && pci != next.pci
-                || details.containsKey("TAC") && next.details.containsKey("TAC") && !details.get("TAC").equals(next.details.get("TAC"))
+                || conflictingIdentityDetails(details, next.details)
                 || !(pci != CellInfo.UNAVAILABLE && pci == next.pci || identity >= 0 && identity == next.identity)) return this;
         Map<String, String> values = new LinkedHashMap<>(details);
         for (Map.Entry<String, String> field : next.details.entrySet())

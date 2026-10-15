@@ -76,6 +76,44 @@ public final class NasVerificationTest {
         check(wrong.supplement(qmi.withIdentity(999)) == wrong, "conflicting NCI never merged");
         check(wrong.withDetails(java.util.Map.of("TAC","123")).supplement(qmi.withDetails(java.util.Map.of("TAC","456")))
                 .details.get("TAC").equals("123"), "conflicting tracking area never merged");
+        for (String name : new String[]{"MCC", "MNC", "PLMN"}) {
+            RadioCell primary = RadioCell.parse(wrong.json().put("rsrp", CellInfo.UNAVAILABLE), "Root 电话")
+                    .withDetails(java.util.Map.of(name, "001"));
+            RadioCell conflicting = qmi.withDetails(java.util.Map.of(name, "002", "补充来源", "QMI SYS / RF"));
+            check(primary.supplement(conflicting) == primary, name + " conflict rejects supplemental signal and identity");
+            List<RadioCell> separate = new ArrayList<>(List.of(primary));
+            RadioReader.supplementReadings(separate, List.of(conflicting));
+            check(separate.equals(List.of(primary, conflicting)), name + " conflict survives reader deduplication");
+            check(RadioCell.surrounding(separate, primary).equals(List.of(conflicting)) && !conflicting.hasTarget(primary),
+                    name + " conflict stays visible without becoming a lock target");
+            RadioCell matching = qmi.withDetails(java.util.Map.of(name, "001", "补充来源", "QMI SYS / RF"));
+            List<RadioCell> merged = new ArrayList<>(List.of(primary));
+            RadioReader.supplementReadings(merged, List.of(matching));
+            check(merged.size() == 1 && merged.get(0).pci == 139 && merged.get(0).rsrp == -97,
+                    name + " match still supplements missing fields");
+        }
+        ByteBuffer common = bytes(26); common.position(19);
+        common.put((byte)1).put(new byte[]{'4','6','0','0','1',(byte)255});
+        JSONObject networkSys = new JSONObject(sys.toString()).put("4b", hex(common.array()));
+        JSONObject networkLoc = new JSONObject(loc.toString());
+        String locBody = loc.getString("2f");
+        for (String[] network : new String[][]{{"64f010", "460", "01"}, {"643021", "460", "123"}}) {
+            networkLoc.put("2f", network[0] + locBody.substring(6));
+            RadioCell decoded = MeasurementDecoder.nas(batch(0, sys, networkLoc, radio, sig, sys), 0).get(0);
+            check(network[1].equals(decoded.details.get("MCC")) && network[2].equals(decoded.details.get("MNC")),
+                    "LOC decodes MCC and two/three-digit MNC for phone comparison");
+        }
+        networkLoc.put("2f", "64f010" + locBody.substring(6));
+        check(MeasurementDecoder.nas(batch(0, networkSys, networkLoc, radio, sig, networkSys), 0).get(0).details.containsKey("SCS"),
+                "matching SYS and LOC operator still permits enrichment");
+        networkLoc.put("2f", "64f020" + locBody.substring(6));
+        RadioCell otherOperator = MeasurementDecoder.nas(batch(0, networkSys, networkLoc, radio, sig, networkSys), 0).get(0);
+        check(!otherOperator.details.containsKey("SCS") && !otherOperator.hasSignal(),
+                "SYS and LOC operator conflict rejects unrelated metadata and signal");
+        RadioCell selectedOperator = partial.withDetails(java.util.Map.of("MCC", "460", "MNC", "01"));
+        List<RadioCell> differentOperators = new ArrayList<>(List.of(selectedOperator));
+        RadioReader.supplementReadings(differentOperators, List.of(otherOperator));
+        check(differentOperators.equals(List.of(selectedOperator, otherOperator)), "raw LOC from another operator is retained separately");
         RadioCell stale = RadioCell.parse(wrong.json().put("timestamp", SystemClock.now - 60_001), "Root 电话");
         check(stale.supplement(qmi) == stale && !stale.hasTarget(stale), "fresh QMI cannot revive stale phone identity");
         RadioCell n77 = phone(640000, 1, 77, 123);
