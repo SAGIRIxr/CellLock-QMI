@@ -4,6 +4,8 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.BitSet;
+import java.util.ArrayList;
+import java.util.List;
 
 /** 网络制式掩码，与基带 mode preference 的位定义一致。 */
 final class Rat {
@@ -237,14 +239,16 @@ final class ModemResult {
     final String stage, message, raw;
     final boolean mutated;
     final ModemState state;
+    boolean nrCombinedOnly;
+    final List<ResultItem> items = new ArrayList<>();
 
     ModemResult(boolean ok, String stage, String message, boolean mutated, ModemState state, String raw) {
         this.ok = ok;
         this.stage = stage;
-        this.message = message;
+        this.message = message == null ? "未返回说明" : message;
         this.mutated = mutated;
         this.state = state;
-        this.raw = raw;
+        this.raw = raw == null ? "" : raw;
     }
 
     static ModemResult failure(String stage, String message, String raw) {
@@ -253,7 +257,107 @@ final class ModemResult {
 
     static ModemResult parse(JSONObject json) {
         ModemState state = json.has("pref") || json.has("hardware") || json.has("lteCell") || json.has("nrCell") ? ModemState.parse(json) : null;
-        return new ModemResult(json.optBoolean("ok"), json.optString("stage"), json.optString("message"),
+        ModemResult result = new ModemResult(json.optBoolean("ok"), json.optString("stage"), json.optString("message"),
                 json.optBoolean("mutated"), state, json.toString());
+        boolean nrConfirmed = result.ok;
+        JSONArray steps = json.optJSONArray("steps");
+        if (steps != null) for (int i = 0; i < steps.length(); i++) {
+            JSONObject step = steps.optJSONObject(i);
+            if (step != null) {
+                ResultItem item = new ResultItem(stepName(step.optString("name")), step.optString("status", "unknown"), "");
+                result.items.add(item);
+                if (step.optString("name").equals("nr") && item.confirmed()) nrConfirmed = true;
+            }
+        }
+        result.nrCombinedOnly = json.optBoolean("nrCombinedOnly") && nrConfirmed;
+        return result;
+    }
+
+    static String stepName(String name) {
+        switch (name) {
+            case "legacy": return "2G / 3G 频段";
+            case "lte": return "LTE 频段";
+            case "nr": return "5G SA＋NSA 频段";
+            case "nrMode": return "5G 组网";
+            case "rat": return "网络制式";
+            case "lteCell": return "LTE 小区锁";
+            case "nrCell": return "5G 小区锁";
+            default: return name;
+        }
+    }
+}
+
+final class ResultItem {
+    final String name, status, detail;
+    ResultItem(String name, String status, String detail) { this.name=name; this.status=status; this.detail=detail; }
+    boolean confirmed() { return status.equals("verified") || status.equals("unchanged") || status.equals("read"); }
+    String label() {
+        switch (status) {
+            case "verified": return "回读已确认";
+            case "unchanged": return "无需操作";
+            case "read": return "已读取";
+            case "rejected": return "请求被拒绝";
+            case "unverified": case "mismatch": return "回读与目标不一致";
+            case "unknown": case "transport": case "interrupted": return "状态未确认";
+            default: return "未完成";
+        }
+    }
+    JSONObject json() throws org.json.JSONException { return new JSONObject().put("name",name).put("status",status).put("detail",detail); }
+}
+
+/** UI、日志与旋转恢复共用逐项结果，不从中文回执反向判断成败。 */
+final class OperationReport {
+    final String title, target;
+    final List<ResultItem> items = new ArrayList<>();
+    String details = "";
+    String restoreStatus = "";
+    OperationReport(String title, String target) { this.title=title; this.target=target; }
+    void add(String name, ModemResult result) {
+        if (result.items.isEmpty()) {
+            String status=result.ok ? (result.stage.equals("state") ? "read" : result.mutated ? "verified" : "unchanged") : result.stage;
+            items.add(new ResultItem(name,status,result.message));
+        } else items.addAll(result.items);
+        details += (details.isEmpty()?"":"\n\n") + name + "\n" + (result.raw.isEmpty()?result.stage+"："+result.message:result.raw);
+        if(details.length()>24000)details="较早回执已省略，可导出诊断查看近期完整回执。\n"+details.substring(details.length()-24000);
+    }
+    boolean ok() { return !items.isEmpty() && items.stream().allMatch(ResultItem::confirmed); }
+    String outcome() {
+        if (ok()) return items.stream().allMatch(i->i.status.equals("read"))?"已读取":"已确认";
+        if (items.stream().anyMatch(ResultItem::confirmed)) return "部分完成";
+        if (!items.isEmpty() && items.stream().allMatch(i->i.status.equals("rejected"))) return "请求被拒绝";
+        return items.stream().anyMatch(i->i.status.equals("unknown")||i.status.equals("transport")||i.status.equals("interrupted")) ? "结果未确认" : "未完成";
+    }
+    String dialogTitle() {
+        if(restoreStatus.equals("matched"))return ok()?"初始配置已恢复":"配置已恢复 · 仍有未完成项";
+        if(restoreStatus.equals("mismatch"))return "尚未完整恢复初始配置";
+        return title+" · "+outcome();
+    }
+    String summary() {
+        StringBuilder text=new StringBuilder();
+        for (ResultItem item:items) { if (text.length()>0) text.append('\n'); text.append(item.name).append("：").append(item.label()); if (!item.detail.isEmpty()) text.append(" · ").append(item.detail); }
+        return text.toString();
+    }
+    String encode() {
+        try { JSONArray rows=new JSONArray();for(ResultItem item:items)rows.put(item.json());return new JSONObject().put("title",title).put("target",target).put("items",rows).put("details",details).put("restoreStatus",restoreStatus).toString(); }
+        catch(org.json.JSONException error) { throw new IllegalStateException(error); }
+    }
+    static OperationReport decode(String raw) {
+        try { JSONObject json=new JSONObject(raw);OperationReport report=new OperationReport(json.optString("title"),json.optString("target"));report.details=json.optString("details");report.restoreStatus=json.optString("restoreStatus");JSONArray rows=json.optJSONArray("items");if(rows!=null)for(int i=0;i<rows.length();i++){JSONObject row=rows.optJSONObject(i);if(row!=null)report.items.add(new ResultItem(row.optString("name"),row.optString("status","unknown"),row.optString("detail")));}return report; }
+        catch(org.json.JSONException error) { return null; }
+    }
+}
+
+final class LogRecord {
+    final String time, text;
+    final OperationReport report;
+    LogRecord(String time,String text,OperationReport report) { this.time=time;this.text=text;this.report=report; }
+    String display() { return time+"  "+text+(report==null?"":" · "+report.outcome()+"\n"+report.summary()); }
+    String encode() {
+        try { return new JSONObject().put("time",time).put("text",text).put("report",report==null?"":report.encode()).toString(); }
+        catch(org.json.JSONException error) { throw new IllegalStateException(error); }
+    }
+    static LogRecord decode(String raw) {
+        try { JSONObject json=new JSONObject(raw);return new LogRecord(json.optString("time"),json.optString("text"),OperationReport.decode(json.optString("report"))); }
+        catch(org.json.JSONException error) { return new LogRecord("",raw,null); }
     }
 }

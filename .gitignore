@@ -1,10 +1,13 @@
 .gradle/
 **/build/
 local.properties
+/local-diagnostics/
 tests/classes/
 tests/*.png
 tests/*.xml
 native/test_qmi
+native/test_diag
+native/test_read
 AGENTS.md
 .idea/
 .vscode/

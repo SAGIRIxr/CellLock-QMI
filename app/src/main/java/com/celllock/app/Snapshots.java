@@ -73,6 +73,13 @@ final class Snapshots {
             if (!snap.has(field) || snap.isNull(field)) return false;
             String value = snap.optString(field);
             if (!value.isEmpty() && !value.matches("[0-9]{1,4}(,[0-9]{1,4})*")) return false;
+            int previous = 0;
+            for (String part : value.isEmpty() ? new String[0] : value.split(",")) {
+                int band = Integer.parseInt(part);
+                if (band <= previous || band > (field.equals("lte") ? 256 : field.startsWith("nr") ? 512 : field.equals("wcdma") ? 19 : 1900)) return false;
+                if (field.equals("gsm") && band != 850 && band != 900 && band != 1800 && band != 1900) return false;
+                previous = band;
+            }
         }
         return true;
     }
@@ -93,23 +100,38 @@ final class Snapshots {
     static List<String[]> restoreCommands(JSONObject snap, int slot) {
         String s = String.valueOf(slot);
         List<String[]> steps = new ArrayList<>();
+        if (!canRestore(snap) || slot < 0 || slot > 1) return steps;
         String lte = snap.optString("lte"), sa = snap.optString("nrSa"), nsa = snap.optString("nrNsa");
-        String gsm = snap.optString("gsm"), wcdma = snap.optString("wcdma");
-        if (!lte.isEmpty()) steps.add(new String[]{"band-lte", s, lte});
-        if (!sa.isEmpty() && sa.equals(nsa)) {
-            steps.add(new String[]{"band-nr", s, "both", sa});
+        steps.add(new String[]{"restore-lte", s, maskArg(lte)});
+        if (sa.equals(nsa)) {
+            steps.add(new String[]{"restore-nr", s, "both", maskArg(sa)});
         } else {
-            if (!sa.isEmpty()) steps.add(new String[]{"band-nr", s, "sa", sa});
-            if (!nsa.isEmpty()) steps.add(new String[]{"band-nr", s, "nsa", nsa});
+            steps.add(new String[]{"restore-nr", s, "sa", maskArg(sa)});
+            steps.add(new String[]{"restore-nr", s, "nsa", maskArg(nsa)});
         }
-        if (!gsm.isEmpty()) steps.add(new String[]{"band-gsm", s, gsm});
-        if (!wcdma.isEmpty()) steps.add(new String[]{"band-wcdma", s, wcdma});
+        steps.add(new String[]{"restore-legacy", s, snap.optString("legacyMask").toLowerCase(java.util.Locale.ROOT)});
         int nrMode = snap.optInt("nrMode", -1);
         if (nrMode >= 0 && nrMode <= 2) steps.add(new String[]{"nr-mode", s, new String[]{"both", "nsa", "sa"}[nrMode]});
         String rats = Rat.arg(snap.optInt("rat", 0));
         if (!rats.isEmpty()) steps.add(new String[]{"rat", s, rats});
-        steps.add(new String[]{"cell-clear", s, "all"});
+        steps.add(new String[]{"cell-clear", s, "lte"});
+        steps.add(new String[]{"cell-clear", s, "nr"});
         return steps;
+    }
+
+    private static String maskArg(String value) { return value.isEmpty() ? "none" : value; }
+
+    static List<String> differences(JSONObject snap, ModemState current) {
+        List<String> out = new ArrayList<>();
+        if (!canRestore(snap) || current == null || !current.prefKnown) { out.add("配置读取不完整，无法核对初始配置"); return out; }
+        BitSet[] actual = {current.lte, current.nrSa, current.nrNsa, current.gsm, current.wcdma};
+        String[] fields = {"lte", "nrSa", "nrNsa", "gsm", "wcdma"};
+        String[] names = {"LTE 频段", "5G SA 频段", "5G NSA 频段", "GSM 频段", "WCDMA 频段"};
+        for (int i = 0; i < fields.length; i++) if (actual[i] == null || !snap.optString(fields[i]).equals(ModemState.arg(actual[i]))) out.add(names[i]);
+        if (!snap.optString("legacyMask").equalsIgnoreCase(current.legacyMask)) out.add("其他原始频段配置");
+        if (snap.optInt("rat") != current.rat) out.add("网络制式");
+        if (snap.optInt("nrMode") != current.nrMode) out.add("5G 组网");
+        return out;
     }
 
     static String describe(JSONObject snap) {

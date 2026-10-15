@@ -8,7 +8,7 @@ import java.util.Arrays;
 import java.util.BitSet;
 import java.util.List;
 
-/** Android runtime only; creates JSON and commands in memory and never executes them. */
+/** JSON runtime required; creates commands in memory and never executes them. */
 public final class SnapshotsTest {
     private static int checks;
     private static final List<String> failures = new ArrayList<>();
@@ -121,14 +121,14 @@ public final class SnapshotsTest {
     private static void testRestoreCommands() throws Exception {
         List<String[]> commands = Snapshots.restoreCommands(snapshot(), 1);
         check(commands.size() == 8, "different SA and NSA produce eight explicit restore steps");
-        command(commands, 0, "band-lte", "1", "1,2,3,250");
-        command(commands, 1, "band-nr", "1", "sa", "1,41,78,257");
-        command(commands, 2, "band-nr", "1", "nsa", "1,78");
-        command(commands, 3, "band-gsm", "1", "850,900,1800,1900");
-        command(commands, 4, "band-wcdma", "1", "1,2,8");
-        command(commands, 5, "nr-mode", "1", "both");
-        command(commands, 6, "rat", "1", "gsm,wcdma,lte");
-        command(commands, 7, "cell-clear", "1", "all");
+        command(commands, 0, "restore-lte", "1", "1,2,3,250");
+        command(commands, 1, "restore-nr", "1", "sa", "1,41,78,257");
+        command(commands, 2, "restore-nr", "1", "nsa", "1,78");
+        command(commands, 3, "restore-legacy", "1", "0000abcd12345678");
+        command(commands, 4, "nr-mode", "1", "both");
+        command(commands, 5, "rat", "1", "gsm,wcdma,lte");
+        command(commands, 6, "cell-clear", "1", "lte");
+        command(commands, 7, "cell-clear", "1", "nr");
         for (String[] command : commands) {
             check(command.length >= 3 && "1".equals(command[1]), "every command keeps the requested slot");
             check(!"reset".equals(command[0]), "initial restore never becomes reset");
@@ -138,16 +138,25 @@ public final class SnapshotsTest {
         JSONObject equal = snapshot().put("nrNsa", "1,41,78,257");
         commands = Snapshots.restoreCommands(equal, 0);
         check(commands.size() == 7, "identical NR settings can use one both command");
-        command(commands, 1, "band-nr", "0", "both", "1,41,78,257");
+        command(commands, 1, "restore-nr", "0", "both", "1,41,78,257");
         for (int mode = 0; mode < 3; mode++) {
             commands = Snapshots.restoreCommands(snapshot().put("nrMode", mode), 0);
-            command(commands, 5, "nr-mode", "0", new String[]{"both", "nsa", "sa"}[mode]);
+            command(commands, 4, "nr-mode", "0", new String[]{"both", "nsa", "sa"}[mode]);
         }
         JSONObject unsupportedFamily = snapshot().put("wcdma", "");
         commands = Snapshots.restoreCommands(unsupportedFamily, 0);
         boolean wcdmaCommand = false;
         for (String[] command : commands) if ("band-wcdma".equals(command[0])) wcdmaCommand = true;
         check(!wcdmaCommand, "empty unsupported family is skipped, never converted to all");
+        commands=Snapshots.restoreCommands(snapshot().put("lte", "").put("nrSa", "").put("nrNsa", ""),0);
+        command(commands,0,"restore-lte","0","none");
+        command(commands,1,"restore-nr","0","both","none");
+        check(Snapshots.restoreCommands(new JSONObject(),0).isEmpty(),"invalid snapshot produces no commands");
+        for(String field:new String[]{"lte","nrSa","nrNsa","gsm","wcdma"})check(!Snapshots.canRestore(snapshot().put(field,"9999")),"range checked for "+field);
+        check(!Snapshots.canRestore(snapshot().put("lte","3,1")),"noncanonical snapshot rejected");
+        check(Snapshots.differences(snapshot(),state()).isEmpty(),"matching state has no restore differences");
+        ModemState different=state();different.lte.set(249);different.legacyMask="0000abcd12345679";
+        check(Snapshots.differences(snapshot(),different).equals(List.of("LTE 频段","其他原始频段配置")),"specific restore differences reported");
     }
 
     private static void testModemParsing() throws Exception {
@@ -200,6 +209,26 @@ public final class SnapshotsTest {
         testExactMatches();
         testRestoreCommands();
         testModemParsing();
+        OperationReport operation=new OperationReport("恢复初始配置","SIM 1");
+        operation.add("LTE",ModemResult.parse(new JSONObject().put("ok",true).put("stage","verified").put("mutated",false)));
+        operation.add("5G 小区锁",ModemResult.parse(new JSONObject().put("ok",false).put("stage","unknown").put("message","请求已接受，锁状态无法确认")));
+        check(!operation.ok()&&operation.outcome().equals("部分完成"),"unknown lock preserves successful settings");
+        OperationReport decoded=OperationReport.decode(operation.encode());
+        check(decoded!=null&&decoded.summary().equals(operation.summary())&&decoded.items.get(1).status.equals("unknown"),"structured results survive rotation serialization");
+        OperationReport refused=new OperationReport("解除锁定","SIM 2");refused.add("5G 小区锁",ModemResult.parse(new JSONObject().put("stage","rejected").put("message","已成功")));
+        check(!refused.ok()&&refused.outcome().equals("请求被拒绝"),"Chinese receipt cannot override rejected stage");
+        ModemResult reset=ModemResult.parse(new JSONObject().put("ok",false).put("stage","unverified").put("steps",new JSONArray()
+            .put(new JSONObject().put("name","lte").put("status","unchanged"))
+            .put(new JSONObject().put("name","nrCell").put("status","rejected"))));
+        OperationReport partial=new OperationReport("开放全部支持范围","SIM 1");partial.add("开放",reset);
+        check(partial.items.size()==2&&partial.items.get(0).confirmed()&&!partial.items.get(1).confirmed()&&partial.outcome().equals("部分完成"),"reset uses per-field structured checks");
+        LogRecord record=new LogRecord("12:00:00","SIM 1 · 恢复",operation);
+        check(LogRecord.decode(record.encode()).display().equals(record.display()),"logs preserve time, target, status and details");
+        check(LogRecord.decode("旧日志").text.equals("旧日志"),"previous saved logs remain readable");
+        operation.restoreStatus="matched";check(operation.dialogTitle().startsWith("配置已恢复")&&OperationReport.decode(operation.encode()).restoreStatus.equals("matched"),"confirmed configuration is distinguished from unlock failure");
+        operation.restoreStatus="mismatch";check(operation.dialogTitle().equals("尚未完整恢复初始配置"),"explicit restore mismatch has a specific conclusion");
+        check(!ModemResult.parse(new JSONObject().put("nrCombinedOnly",true).put("ok",false)).nrCombinedOnly,"accepted combined write without verification does not establish capability");
+        check(ModemResult.parse(new JSONObject().put("nrCombinedOnly",true).put("steps",new JSONArray().put(new JSONObject().put("name","nr").put("status","verified")))).nrCombinedOnly,"verified NR reset step can establish capability even when unlock fails");
         JSONObject report = new JSONObject().put("success", failures.isEmpty()).put("checks", checks)
                 .put("failures", new JSONArray(failures)).put("modemCommandsSent", 0);
         System.out.println(report);
