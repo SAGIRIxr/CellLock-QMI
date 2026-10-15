@@ -77,6 +77,7 @@ CellLock 是面向已 Root 高通 Android 手机的本地网络设置工具，�
 | `native/test_qmi.c`、`test_transport.inc` | 完全替换真实传输的原生测试；不访问基带 |
 | `tests/*.java` | 参数、快照、信号历史纯逻辑测试 |
 | `docs/DEVELOPMENT.zh-CN.md`、`docs/images/` | 公开开发交接与 README 界面截图 |
+| `CHANGELOG.md` | 各版本更新说明 |
 
 核心调用关系：
 
