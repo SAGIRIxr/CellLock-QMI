@@ -18,7 +18,10 @@ if($LASTEXITCODE -ne 0){throw 'Host tests did not compile'}
 foreach($name in $tests){
     $arguments=@()
     if($name -eq 'MeasurementDecoderTest' -and $Captures){$arguments += $Captures}
-    if($name -eq 'NasVerificationTest'){$arguments += Join-Path $PSScriptRoot 'fixtures/nas-verified.redacted.jsonl'}
+    if($name -eq 'NasVerificationTest'){
+        $arguments += Join-Path $PSScriptRoot 'fixtures/nas-verified.redacted.jsonl'
+        $arguments += Join-Path $PSScriptRoot 'fixtures/nas-n28-conflict.redacted.json'
+    }
     & (Join-Path $Jdk 'bin/java.exe') -cp "$output;$JsonJar;$AndroidJar" "com.celllock.app.$name" @arguments
     if($LASTEXITCODE -ne 0){throw "$name failed"}
 }
