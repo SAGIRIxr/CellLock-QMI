@@ -28,16 +28,16 @@ NR mode、独立 SA / NSA 频段请求省略可选 duration，使用协议默认
 
 成功要求逻辑写入获确认且随后读取目标字段一致。频段命令按硬件支持的位验证；“恢复初始设置”的完整列表、RAT、NR mode 与 `legacyMask` 另由应用最终读取逐位比较。legacy 写入保留其他制式与未命名位。NR 查询只有成功结果 TLV 时保持状态未知，即使清除命令返回成功也不宣称已解除。“全部开放”分别核验 SA、NSA、NR mode、legacy、LTE、RAT 和小区锁，部分失败不会报告整体成功。没有基于未知原值的自动回滚。
 
-## DCI 版本探测
+## DCI 接口依据
 
-`celllock_probe.c` 为本任务编写，运行时仅加载手机已有 `/vendor/lib64/libdiag.so`。ABI 名称、参数及 `DIAG_DCI_NO_ERROR=1001` 核对公开镜像 `os-vector/wire-os` 提交 `0c3484f229d693cb76934d205a26768cb31ef959` 的 `diag/include/diag_lsm_dci.h`。只调用固定版本读取指令 `DIAG_VERNO_F=0`。
+`celllock_diag.c` 运行时仅加载手机已有 `/vendor/lib64/libdiag.so`。ABI 名称、参数及 `DIAG_DCI_NO_ERROR=1001` 核对公开镜像 `os-vector/wire-os` 提交 `0c3484f229d693cb76934d205a26768cb31ef959` 的 `diag/include/diag_lsm_dci.h`。
 
 **未将 Qualcomm 头文件、实现源码或手机的 libdiag.so 复制进可分发交付物。** 编译不依赖上述资料或厂商库文件。
 
 ## 0.4 只读测量
 
 - `celllock_read.c` 复用现有 QRTR 传输，仅允许 UIM `0x002F/0x0047`、NAS 绑定 `0x0045` 与小区查询 `0x0043`；不开放 RAW 请求或任意消息。LTE 同频/异频、扩展 EARFCN、NR `0x2E/0x2F` 字段核对 [libqmi NAS 定义](https://github.com/linux-mobile-broadband/libqmi/blob/d9e8af5cae7fdf9749baf87606568d3af4d03082/data/qmi-service-nas.json)，UIM 卡槽核对同提交的 [UIM 定义](https://github.com/linux-mobile-broadband/libqmi/blob/d9e8af5cae7fdf9749baf87606568d3af4d03082/data/qmi-service-uim.json)。仅借助协议定义，不复制 libqmi 实现。
-- `celllock_diag.c` 动态使用设备自己的 libdiag，短会话订阅唯一 `0xB97F`，依次停止订阅、释放客户端、反初始化。API 依据与前述 DCI 探针一致；不改变 logging mode、USB、SELinux、NV 或 EFS。
+- `celllock_diag.c` 动态使用设备自己的 libdiag，短会话订阅唯一 `0xB97F`，依次停止订阅、释放客户端、反初始化。API 依据见上节；不改变 logging mode、USB、SELinux、NV 或 EFS。
 - SM8250 / MIUI 14 真机确认 APK 安装目录的 linker namespace 禁止直接加载厂商 libdiag；`RadioReader` 仅将随包自编 ELF 复制到 Root 私有 `/data/local/tmp/celllock-diag.XXXXXX` 目录执行，退出时清理。不复制厂商库，也不修改 linker 配置。其他 ROM 仍可能不支持该接口。
 - 0.4.1 将短会话内日志保留为有界批次（最多 32 包 / 96 KiB，超过时淘汰最旧完整包），完成注销后输出；Java 合并邻区，重复小区以最近包覆盖。`test_diag.c` 仅验证内存缓冲边界，不初始化 DCI 或访问设备接口。
 - Java `MeasurementDecoder` 的 NR 2.7 布局参考 [SCAT 固定提交的 NR 解码器](https://github.com/fgsect/scat/blob/07c729a41ed38884dfbcc5c9ed55a22e548db285/src/scat/parsers/qualcomm/diagnrlogparser.py)，并用自编探针的真实回包核对；保留小区级 Q7 RSRQ，0 表示没有有效该测量。其他版本明确拒绝；没有移植 SCAT 的解析实现。日志 channel 不代表 SIM，QXDM 时钟未完成跨休眠校准；0.4.2 仅允许最近收到且与服务频段 / 频点相同、PCI 合法的观测填入所选 SIM 的候选表单，仍不伪造归属或绘制趋势。
@@ -49,7 +49,7 @@ NR mode、独立 SA / NSA 频段请求省略可选 duration，使用协议默认
 Windows PowerShell：`./build.ps1 -Ndk 'C:/path/to/android-ndk'`。
 
 - 使用 Android NDK Clang，arm64-v8a，API 26，PIE。
-- `libcelllock_qmi.so`、`libcelllock_read.so`、`libcelllock_diag.so` 和独立 `libcelllock_probe.so` 是可执行 ELF，使用 `.so` 文件名便于 APK 的 `jniLibs/arm64-v8a` 打包；必须 `extractNativeLibs=true`，以 nativeLibraryDir 中实际文件路径调用。编译逻辑仅在 `native/build.ps1`：直接调用默认生成四个 ELF 与三个纯测试；根目录 `build-native.ps1` 转调该脚本，将前三个 ELF 输出到 APK 目录，`-BuildTests` 可额外生成纯测试。测试不打入 APK。
+- `libcelllock_qmi.so`、`libcelllock_read.so`、`libcelllock_diag.so` 是可执行 ELF，使用 `.so` 文件名便于 APK 的 `jniLibs/arm64-v8a` 打包；必须 `extractNativeLibs=true`，以 nativeLibraryDir 中实际文件路径调用。编译逻辑仅在 `native/build.ps1`：直接调用默认生成三个 ELF 与三个纯测试；根目录 `build-native.ps1` 转调该脚本，将 ELF 输出到 APK 目录，`-BuildTests` 可额外生成纯测试。测试不打入 APK。
 - `test_qmi` 是无基带访问的协议测试可执行文件；不必打入 APK。`test_transport.inc` 在测试编译时完整替换 socket/QRTR 收发，模拟数据仅在内存中变化；生产编译不包含该文件。
 - 亦可在本机 GCC 运行：`gcc -std=c11 -O2 -Wall -Wextra -Werror test_qmi.c -o test_qmi_host`，然后执行生成的程序。测试覆盖报文边界、编码、严格绑定、失败回读、超时、部分写入及恢复验证。
 - 不需要额外下载/分发厂商库，不要求修改 SELinux、USB 配置或系统属性。

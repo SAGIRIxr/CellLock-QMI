@@ -56,6 +56,6 @@ NR `ackOnly=true` 表示查询只收到成功结果 TLV，没有可解码的锁�
 
 小区读取使用独立的只读 `libcelllock_read.so`：`sims` 查询 UIM，`cells 0|1` 在同一 NAS 连接先绑定所选订阅，再读 SYS 0x004D → LOC 0x0043 → RF 0x0031 → SIG 0x004F → SYS 0x004D。读取总期限 6 秒；绑定失败不继续。仅保留已支持的 TLV，ICCID 仍脱敏。前后 SYS 用于 Java 层核对服务是否切换；RF 扩展 32 位频道优先，旧 16 位 NR 频道不能用于校正。具体行为和限制见 [开发交接文档](../docs/DEVELOPMENT.zh-CN.md)。
 
-在项目根目录运行 `build-native.ps1 -Ndk <NDK目录> -BuildTests`，或按主 [README](../README.md) 构建 App。编译统一由 `native/build.ps1` 执行，直接调用仍默认生成探针与测试。`native/test_qmi` 是离线字节编码与状态判定测试；`test_diag` 检查缓冲区，`test_read` 检查 NAS 标识保留与 ICCID 脱敏，三者均不建立基带连接。旧 DCI 探测组件不是当前界面的后端。
+在项目根目录运行 `build-native.ps1 -Ndk <NDK目录> -BuildTests`，或按主 [README](../README.md) 构建 App。编译统一由 `native/build.ps1` 执行，直接调用默认同时生成测试。`native/test_qmi` 是离线字节编码与状态判定测试；`test_diag` 检查缓冲区，`test_read` 检查 NAS 标识保留与 ICCID 脱敏，三者均不建立基带连接。
 
-0.3 验证进度见 [VALIDATION.md](VALIDATION.md)，旧机与 0.2 证据原样保存在 [VALIDATION-0.2.md](VALIDATION-0.2.md)。5G 小区 / ARFCN 锁定效果尚未实测。协议来源与固定提交由 [SOURCES.md](SOURCES.md) 记录。
+0.3 验证进度见 [VALIDATION.md](VALIDATION.md)。5G 小区 / ARFCN 锁定效果尚未实测。协议来源与固定提交由 [SOURCES.md](SOURCES.md) 记录。
