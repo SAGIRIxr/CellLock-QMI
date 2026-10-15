@@ -66,7 +66,7 @@
 ./gradlew.bat clean assembleDebug lintDebug
 ```
 
-纯测试还包括 `tests/MeasurementDecoderTest.java`，覆盖 NR 版本/长度、QMI 绑定/字段和观测安全边界。`tests/run-host.ps1` 可在 PC 运行参数、历史、SIM、快照和解析测试，需要 SDK `android.jar` 作为类型定义，以及独立 `org.json` 测试运行库；测试库和时钟替身不打入 APK。完整命令见 [交接文档](docs/DEVELOPMENT.zh-CN.md)。全部纯测试只检查逻辑，不发送基带命令。既有真机结果见 [验证记录](native/VALIDATION.md)；0.2 历史证据见 [历史记录](native/VALIDATION-0.2.md)。
+纯测试还包括 `tests/MeasurementDecoderTest.java`，覆盖 NR 版本/长度、QMI 绑定/字段和观测安全边界。`tests/run-host.ps1` 可在 PC 运行参数、历史、SIM、快照和解析测试，需要 SDK `android.jar` 作为类型定义，以及独立 `org.json` 测试运行库；测试库和时钟替身不打入 APK。完整命令见 [交接文档](docs/DEVELOPMENT.zh-CN.md)。全部纯测试只检查逻辑，不发送基带命令。既有真机结果见 [验证记录](native/VALIDATION.md)。
 
 ## 许可
 
