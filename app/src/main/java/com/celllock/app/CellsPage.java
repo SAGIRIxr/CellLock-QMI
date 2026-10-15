@@ -180,8 +180,9 @@ final class CellsPage extends ScrollView {
         otherHeading.setOnClickListener(v -> { otherExpanded = !otherExpanded; renderOtherVisibility(); });
         page.addView(otherHeading, ui.fill(48));
         otherNotice = ui.caption("SIM 归属或服务身份未确认，不计入周边数量");
-        page.addView(otherNotice, ui.fill(-2));
-        ui.gap(page, 8);
+        LinearLayout.LayoutParams noticeSpacing = ui.fill(-2);
+        noticeSpacing.setMargins(0, ui.dp(12), 0, ui.dp(12));
+        page.addView(otherNotice, noticeSpacing);
         otherObservations = ui.column();
         otherObservations.setBackground(ui.shape(Ui.CARD, 20, 0));
         page.addView(otherObservations, ui.fill(-2));
@@ -356,7 +357,7 @@ final class CellsPage extends ScrollView {
         otherHeading.setText("其他观测 · " + otherTotal + " 个 · " + (otherExpanded ? "收起" : "展开"));
         otherHeading.setContentDescription(otherHeading.getText() + "，SIM 归属或服务身份尚未确认");
         otherHeading.setVisibility(otherTotal > 0 ? VISIBLE : GONE);
-        otherNotice.setVisibility(otherTotal > 0 ? VISIBLE : GONE);
+        otherNotice.setVisibility(otherTotal > 0 && otherExpanded ? VISIBLE : GONE);
         otherObservations.setVisibility(otherTotal > 0 && otherExpanded ? VISIBLE : GONE);
     }
 

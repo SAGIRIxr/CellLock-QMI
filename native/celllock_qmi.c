@@ -94,6 +94,7 @@ static uint16_t txn;
 static volatile sig_atomic_t nas_fd = -1;
 static volatile sig_atomic_t mutated;
 static int writes_sent, writes_accepted, last_result = -1, last_error = -1;
+static int nr_combined_only;
 
 static void on_signal(int sig) {
     const char *text = mutated
@@ -250,11 +251,14 @@ static int add_tlv(uint8_t *p, int at, uint8_t id, const void *value, int length
     return at + 3 + length;
 }
 
-/* 所有 system selection 写入都附带“永久生效”时长，并且只改一个字段 */
+/* 每次只改一个偏好；省略 duration 时协议默认永久生效。 */
 static int set_preference(uint8_t id, const void *value, int length) {
     uint8_t body[96];
     const uint8_t permanent = 1;
-    int at = add_tlv(body, 0, SET_DURATION, &permanent, 1);
+    int at = 0;
+    /* 部分固件拒绝 NR 新字段单独与 duration 配对，采用可选字段的默认值。 */
+    if (id != SET_NR_MODE && id != SET_NR_SA && id != SET_NR_NSA)
+        at = add_tlv(body, at, SET_DURATION, &permanent, 1);
     at = add_tlv(body, at, id, value, length);
     return write_request(NAS_SET_SYS_SEL, body, at);
 }
@@ -556,10 +560,18 @@ static int lte_bands_set(const uint8_t *mask, const Hardware *hw) {
 
 /* 优先分别写 SA / NSA；旧固件只认合并字段 */
 static int nr_bands_set(int sa, int nsa, const uint8_t *mask) {
+    if (sa && nsa && nr_combined_only) return set_preference(SET_NR_COMBINED, mask, 64);
     int ok = 1;
     if (sa) ok = set_preference(SET_NR_SA, mask, 64);
     if (ok && nsa) ok = set_preference(SET_NR_NSA, mask, 64);
-    if (!ok && sa && nsa && unsupported_field()) ok = set_preference(SET_NR_COMBINED, mask, 64);
+    /* MissingArgument 只用于 NR 独立字段兼容；超时不重发，单独 SA/NSA 不扩大范围。 */
+    if (!ok && sa && nsa && (unsupported_field() || (!reply.transport && reply.result == 1 && reply.error == 17))) {
+        Pref current;
+        read_pref(&current);
+        if (!current.known || !current.has_sa || !current.has_nsa) return 0;
+        ok = set_preference(SET_NR_COMBINED, mask, 64);
+        if (ok) nr_combined_only = 1;
+    }
     return ok;
 }
 
@@ -618,7 +630,7 @@ static int nr_freq_is(const NrCell *s, unsigned arfcn, unsigned scs) {
 
 typedef enum {
     CMD_STATE, CMD_CELL_LTE, CMD_CELL_NR, CMD_FREQ_NR, CMD_CELL_CLEAR,
-    CMD_BAND_LTE, CMD_BAND_NR, CMD_BAND_GSM, CMD_BAND_WCDMA, CMD_RAT, CMD_NR_MODE, CMD_RESET
+    CMD_BAND_LTE, CMD_BAND_NR, CMD_BAND_GSM, CMD_BAND_WCDMA, CMD_RAT, CMD_NR_MODE, CMD_RESET, CMD_LEGACY
 } Command;
 
 static const struct { const char *name; Command cmd; int argc; } COMMANDS[] = {
@@ -634,6 +646,12 @@ static const struct { const char *name; Command cmd; int argc; } COMMANDS[] = {
     {"rat", CMD_RAT, 4},
     {"nr-mode", CMD_NR_MODE, 4},
     {"reset", CMD_RESET, 3},
+    {"reset-combined", CMD_RESET, 3},
+    {"restore-lte", CMD_BAND_LTE, 4},
+    {"restore-nr", CMD_BAND_NR, 5},
+    {"restore-legacy", CMD_LEGACY, 4},
+    {"band-nr-combined", CMD_BAND_NR, 5},
+    {"restore-nr-combined", CMD_BAND_NR, 5},
 };
 
 #define RAT_KNOWN (RAT_GSM | RAT_WCDMA | RAT_LTE | RAT_NR)
@@ -642,13 +660,31 @@ typedef struct {
     Command cmd;
     const char *name;
     unsigned slot, arfcn, pci, band, scs, rat, nr_mode;
-    int lte, nr, sa, nsa, all;
+    int lte, nr, sa, nsa, all, exact, combined;
     uint8_t mask[64];
     uint64_t legacy;
 } Job;
 
 static const char *stage = "arguments";
 static char message[256] = "命令或参数无效";
+
+typedef struct { const char *name, *status; int writes, accepted, result, error; } Step;
+static Step steps[7];
+static int step_count, step_writes, step_accepted;
+
+static void remember_step(const char *name) {
+    Step *s = &steps[step_count++];
+    *s = (Step){.name = name, .writes = writes_sent - step_writes, .accepted = writes_accepted - step_accepted,
+                .result = last_result, .error = last_error};
+    step_writes = writes_sent; step_accepted = writes_accepted;
+}
+
+static void check_step(int index, int known, int matches) {
+    Step *s = &steps[index];
+    s->status = s->writes && s->accepted < s->writes && (s->result != 0 || s->error != 0)
+        ? (s->result < 0 ? "transport" : "rejected")
+        : !known ? "unknown" : !matches ? "mismatch" : s->writes ? "verified" : "unchanged";
+}
 
 static void report(const char *s, const char *m) {
     stage = s;
@@ -697,6 +733,8 @@ static int parse_job(int argc, char **argv, Job *job) {
         if (argc >= 2 && !strcmp(argv[1], COMMANDS[i].name) && argc == COMMANDS[i].argc) {
             job->cmd = COMMANDS[i].cmd;
             job->name = COMMANDS[i].name;
+            job->exact = !strncmp(job->name, "restore-", 8);
+            job->combined = strstr(job->name, "-combined") != NULL;
             found = 1;
         }
     }
@@ -731,11 +769,14 @@ static int parse_job(int argc, char **argv, Job *job) {
             job->nr = !strcmp(argv[3], "nr") || !strcmp(argv[3], "all");
             return job->lte || job->nr;
         case CMD_BAND_LTE:
+            if (job->exact) return !strcmp(argv[3], "none") || band_list(argv[3], 256, job->mask) > 0;
             job->all = !strcmp(argv[3], "all");
             return job->all || band_list(argv[3], 256, job->mask) > 0;
         case CMD_BAND_NR:
             job->sa = !strcmp(argv[3], "sa") || !strcmp(argv[3], "both");
             job->nsa = !strcmp(argv[3], "nsa") || !strcmp(argv[3], "both");
+            if (job->combined && !(job->sa && job->nsa)) return 0;
+            if (job->exact) return (job->sa || job->nsa) && (!strcmp(argv[4], "none") || band_list(argv[4], 512, job->mask) > 0);
             job->all = !strcmp(argv[4], "all");
             return (job->sa || job->nsa) && (job->all || band_list(argv[4], 512, job->mask) > 0);
         case CMD_BAND_GSM:
@@ -751,6 +792,10 @@ static int parse_job(int argc, char **argv, Job *job) {
             else if (!strcmp(argv[3], "sa")) job->nr_mode = 2;
             else return 0;
             return 1;
+        case CMD_LEGACY:
+            if (strlen(argv[3]) != 16 || strspn(argv[3], "0123456789abcdefABCDEF") != 16) return 0;
+            job->legacy = strtoull(argv[3], NULL, 16);
+            return 1;
         default:
             return 1;
     }
@@ -758,12 +803,17 @@ static int parse_job(int argc, char **argv, Job *job) {
 
 static int needs_hardware(Command cmd) {
     return cmd == CMD_STATE || cmd == CMD_RESET || cmd == CMD_BAND_LTE || cmd == CMD_BAND_NR ||
-           cmd == CMD_BAND_GSM || cmd == CMD_BAND_WCDMA || cmd == CMD_RAT;
+           cmd == CMD_BAND_GSM || cmd == CMD_BAND_WCDMA || cmd == CMD_RAT || cmd == CMD_LEGACY;
 }
 
 /* "all" 展开为本机支持的全部频段。手选列表允许包含硬件不支持的位（用于原样
  * 写回初始配置），但至少要有一个本机支持的频段，否则锁定后必然无服务。 */
 static int resolve_against_hardware(Job *job, const Hardware *hw) {
+    if (job->exact) {
+        if (hw->known) return 1;
+        report("hardware", "未能读取本机支持的频段，未执行精确恢复");
+        return 0;
+    }
     if (job->cmd >= CMD_BAND_LTE && job->cmd <= CMD_RAT && !hw->known) {
         report("hardware", "未能读取本机支持的频段，未写入");
         return 0;
@@ -837,8 +887,8 @@ static int connect_nas(unsigned slot) {
 
 /* system selection 的写入是异步生效的：写完立刻回读常常还是旧值 */
 static int pref_matches(const Job *job, const Hardware *hw, const Pref *p, uint64_t legacy_target) {
-    const uint8_t *hw_lte = hw->known ? hw->lte : NULL;
-    const uint8_t *hw_nr = hw->known ? hw->nr : NULL;
+    const uint8_t *hw_lte = hw->known && !job->exact ? hw->lte : NULL;
+    const uint8_t *hw_nr = hw->known && !job->exact ? hw->nr : NULL;
     switch (job->cmd) {
         case CMD_BAND_LTE:
             return p->has_lte && mask_equal_within(p->lte, job->mask, hw_lte, 32);
@@ -855,6 +905,8 @@ static int pref_matches(const Job *job, const Hardware *hw, const Pref *p, uint6
             return p->rat >= 0 && ((unsigned)p->rat & RAT_KNOWN) == (job->rat & RAT_KNOWN);
         case CMD_NR_MODE:
             return p->nr_mode == (int)job->nr_mode;
+        case CMD_LEGACY:
+            return p->has_legacy && p->legacy == job->legacy;
         default:
             return 0;
     }
@@ -871,10 +923,25 @@ static int await_pref(const Job *job, const Hardware *hw, Pref *p, uint64_t lega
     return 0;
 }
 
+static int target_known(const Job *job, const State *s) {
+    switch(job->cmd) {
+        case CMD_CELL_LTE: return s->lte.known;
+        case CMD_CELL_NR: case CMD_FREQ_NR: return s->nr.known;
+        case CMD_CELL_CLEAR: return (!job->lte || s->lte.known) && (!job->nr || s->nr.known);
+        case CMD_BAND_LTE: return s->pref.has_lte;
+        case CMD_BAND_NR: return (!job->sa || s->pref.has_sa) && (!job->nsa || s->pref.has_nsa);
+        case CMD_BAND_GSM: case CMD_BAND_WCDMA: case CMD_LEGACY: return s->pref.has_legacy;
+        case CMD_RAT: return s->pref.rat >= 0;
+        case CMD_NR_MODE: return s->pref.nr_mode >= 0;
+        default: return s->pref.known;
+    }
+}
+
 /* 1 = 写入并回读一致；0 = 失败；-1 = 已设置好 stage/message 的部分失败 */
 static int run_job(const Job *job, const Hardware *hw, State *s) {
     int sent = 1;
     uint64_t legacy_target = 0;
+    if (job->combined) nr_combined_only = 1;
 
     switch (job->cmd) {
         case CMD_CELL_LTE:
@@ -911,16 +978,19 @@ static int run_job(const Job *job, const Hardware *hw, State *s) {
         case CMD_BAND_WCDMA:
         case CMD_RAT:
         case CMD_NR_MODE:
+        case CMD_LEGACY:
             if (job->cmd == CMD_BAND_GSM || job->cmd == CMD_BAND_WCDMA) {
                 if (!s->pref.has_legacy) { report("state", "未能读取当前 2G/3G 频段设置，未写入"); return -1; }
                 uint64_t family = job->cmd == CMD_BAND_GSM ? all_gsm_bits() : all_wcdma_bits();
                 legacy_target = (s->pref.legacy & ~family) | job->legacy;
             }
             if (pref_matches(job, hw, &s->pref, legacy_target)) return 1;
+            if (job->combined) nr_combined_only = 1;
             if (job->cmd == CMD_BAND_LTE) sent = lte_bands_set(job->mask, hw);
             else if (job->cmd == CMD_BAND_NR) sent = nr_bands_set(job->sa, job->nsa, job->mask);
             else if (job->cmd == CMD_RAT) sent = rat_set(job->rat);
             else if (job->cmd == CMD_NR_MODE) sent = nr_mode_set(job->nr_mode);
+            else if (job->cmd == CMD_LEGACY) sent = legacy_set(job->legacy);
             else sent = legacy_set(legacy_target);
             if (!sent) { read_pref(&s->pref); return 0; }
             return await_pref(job, hw, &s->pref, legacy_target);
@@ -937,18 +1007,25 @@ static int run_job(const Job *job, const Hardware *hw, State *s) {
             }
             legacy_target = (s->pref.legacy & ~family) | (hw->legacy & family);
             int legacy_ok = !need_legacy || s->pref.legacy == legacy_target || legacy_set(legacy_target);
+            remember_step("legacy");
             int lte_ok = !need_lte || (s->pref.has_lte && mask_equal_within(s->pref.lte, hw->lte, hw->lte, 32)) ||
                          lte_bands_set(hw->lte, hw);
+            remember_step("lte");
             int nr_ok = !need_nr || (s->pref.has_sa && s->pref.has_nsa &&
                         mask_equal_within(s->pref.sa, hw->nr, hw->nr, 64) &&
                         mask_equal_within(s->pref.nsa, hw->nr, hw->nr, 64)) || nr_bands_set(1, 1, hw->nr);
+            remember_step("nr");
             int mode_ok = !need_nr || s->pref.nr_mode == 0 || nr_mode_set(0);
+            remember_step("nrMode");
             int rat_ok = s->pref.rat >= 0 && ((unsigned)s->pref.rat & RAT_KNOWN) == rats;
             if (!rat_ok) rat_ok = rat_set(rats);
+            remember_step("rat");
             int lte_clear_ok = !need_lte || lte_cell_clear(&s->lte);
             if (!lte_clear_ok && s->lte.known) lte_clear_ok = lte_cell_set(1, 0, 0);
+            remember_step("lteCell");
             int nr_clear_ok = !need_nr || nr_cell_clear(&s->nr);
             if (!nr_clear_ok && nr_can_write(&s->nr)) nr_clear_ok = nr_cell_set(NR_LOCK_NONE, 0, 0, 0, 0);
+            remember_step("nrCell");
 
             int64_t deadline = now_ms() + 4200;
             do {
@@ -964,6 +1041,15 @@ static int run_job(const Job *job, const Hardware *hw, State *s) {
             } while (now_ms() < deadline);
             read_lte_cell(&s->lte);
             read_nr_cell(&s->nr);
+
+            check_step(0, !need_legacy || s->pref.has_legacy, !need_legacy || s->pref.legacy == legacy_target);
+            check_step(1, !need_lte || s->pref.has_lte, !need_lte || mask_equal_within(s->pref.lte, hw->lte, hw->lte, 32));
+            check_step(2, !need_nr || (s->pref.has_sa && s->pref.has_nsa), !need_nr ||
+                (mask_equal_within(s->pref.sa, hw->nr, hw->nr, 64) && mask_equal_within(s->pref.nsa, hw->nr, hw->nr, 64)));
+            check_step(3, !need_nr || s->pref.nr_mode >= 0, !need_nr || s->pref.nr_mode == 0);
+            check_step(4, s->pref.rat >= 0, s->pref.rat >= 0 && ((unsigned)s->pref.rat & RAT_KNOWN) == rats);
+            check_step(5, !need_lte || s->lte.known, !need_lte || lte_cell_clear(&s->lte));
+            check_step(6, !need_nr || s->nr.known, !need_nr || nr_cell_clear(&s->nr));
 
             if (need_legacy && (!legacy_ok || !s->pref.has_legacy || s->pref.legacy != legacy_target))
                 strcat(failed, " 2G/3G 频段");
@@ -1028,13 +1114,15 @@ int main(int argc, char **argv) {
     int verified = run_job(&job, &hw, &state);
     if (verified == 1) {
         ok = 1;
-        report("verified", writes_sent ? "已写入，回读与目标一致" : "当前已是目标状态，无需写入");
+        report("verified", writes_sent ? "已写入，回读与目标一致" : job.cmd == CMD_CELL_CLEAR ? "当前未锁定，无需解除" : "当前已是目标状态，无需写入");
     } else if (verified == 0) {
         if (writes_sent && (last_result != 0 || last_error != 0))
             report(last_result < 0 ? "transport" : "rejected",
                    last_result < 0 ? "与基带通信中断，命令是否生效未知" : "基带拒绝了该命令");
-        else
-            report("unverified", "基带已接受命令，但回读与目标不一致");
+        else {
+            int known = target_known(&job, &state);
+            report(known ? "unverified" : "unknown", known ? "回读结果未达到目标" : "请求已接受，状态无法确认");
+        }
     }
 
 done:
@@ -1044,6 +1132,13 @@ done:
            "\"mutated\":%s,\"writes\":%d,\"accepted\":%d,\"result\":%d,\"error\":%d",
            ok ? "true" : "false", job.name ? job.name : "", job.slot, stage, message,
            mutated ? "true" : "false", writes_sent, writes_accepted, last_result, last_error);
+    printf(",\"nrCombinedOnly\":%s,\"steps\":[", nr_combined_only ? "true" : "false");
+    for (int i = 0; i < step_count; ++i) {
+        Step *s = &steps[i];
+        printf("%s{\"name\":\"%s\",\"status\":\"%s\",\"writes\":%d,\"accepted\":%d,\"result\":%d,\"error\":%d}",
+            i ? "," : "", s->name, s->status ? s->status : "unknown", s->writes, s->accepted, s->result, s->error);
+    }
+    putchar(']');
     if (bound) {
         fputs(",\"lteCell\":", stdout); print_lte_cell(&state.lte);
         fputs(",\"nrCell\":", stdout); print_nr_cell(&state.nr);

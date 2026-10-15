@@ -123,7 +123,7 @@ final class DevicePage extends ScrollView {
         lastReadValue.setText(lastRead == null || lastRead.isEmpty() ? "—" : lastRead);
         lteBands.setText(hardwareBands(state == null ? null : state.hwLte, state != null && state.hwKnown, "B"));
         nrBands.setText(hardwareBands(state == null ? null : state.hwNr, state != null && state.hwKnown, "n"));
-        readButton.setText(busy ? "读取中" : "读取");
+        readButton.setText(busy ? "读取中" : state != null && state.hwKnown ? "刷新" : "读取");
         Ui.enable(readButton, !busy);
         boolean phoneGranted = activity.checkSelfPermission(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED;
         permission(phonePermission, phoneGranted && simStatus != SimStatus.RESTRICTED,

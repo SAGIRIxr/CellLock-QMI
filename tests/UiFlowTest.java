@@ -79,7 +79,7 @@ public final class UiFlowTest extends Instrumentation {
         check(((Button)section.getChildAt(0)).getText().toString().equals("制式")&&((Button)section.getChildAt(2)).getText().toString().equals("小区"),"section order");
         check(((Button)cell.getChildAt(0)).getText().toString().equals("5G NR")&&((Button)band.getChildAt(0)).getText().toString().equals("5G NR"),"NR first");
         check(UiFlowTest.<TextView>field(page,"nrCellStatus").getText().toString().equals("未知"),"unknown cannot imply unlocked");
-        check(UiFlowTest.<Button>field(page,"cellApply").getText().toString().equals("锁定")&&UiFlowTest.<Button>field(page,"cellClear").getText().toString().equals("清除解锁"),"short labels");
+        check(UiFlowTest.<Button>field(page,"cellApply").getText().toString().equals("锁定")&&UiFlowTest.<Button>field(page,"cellClear").getText().toString().equals("解除 5G 小区锁"),"specific NR unlock label");
         RadioCell nr=target(true),lte=target(false);page.setServingCell(nr);page.fillTarget(nr);
         for(RadioCell target:List.of(nr,lte))for(String name:new String[]{"MCC","MNC","PLMN"}) {
             RadioCell primary=RadioCell.parse(target.json().put("rsrp",android.telephony.CellInfo.UNAVAILABLE),"Root 电话")
@@ -99,11 +99,16 @@ public final class UiFlowTest extends Instrumentation {
         UiFlowTest.<Ui.Segmented>field(page,"nrKindTabs").select(1);invoke(page,"updateCellUi");
         command(page,host,"cellApply","freq-nr","154570","15");
         page.fillTarget(lte);check(cell.selected()==1,"LTE target opens LTE form");
+        check(UiFlowTest.<Button>field(page,"cellClear").getText().toString().equals("解除 LTE 小区锁"),"LTE unlock label follows selected radio");
         command(page,host,"cellApply","cell-lte","1650","111");command(page,host,"cellClear","cell-clear","lte");
         band.select(0);invoke(page,"renderBandChoices");command(page,host,"bandApply","band-nr","both","28,78");
         band.select(1);invoke(page,"renderBandChoices");command(page,host,"bandApply","band-lte","3,8");
         band.select(2);invoke(page,"renderBandChoices");command(page,host,"bandApply","band-gsm","900");
         check(host.commands.size()==2&&host.commands.get(1)[0].equals("band-wcdma"),"legacy group remains mapped");
+        band.select(0);Ui.Segmented nrTarget=field(page,"nrTargetTabs");nrTarget.select(1);page.setNrCombinedOnly(true);
+        check(nrTarget.selected()==0&&!nrTarget.getChildAt(1).isEnabled()&&!nrTarget.getChildAt(2).isEnabled(),"confirmed combined-only firmware disables independent frequency controls");
+        command(page,host,"bandApply","band-nr","both","28,78");
+        page.setNrCombinedOnly(false);check(nrTarget.getChildAt(1).isEnabled()&&nrTarget.getChildAt(2).isEnabled(),"capability can differ after switching SIM");
         Bundle saved=new Bundle();page.save(saved);LockPage restored=new LockPage(activity,ui,new Host());restored.setState(state);restored.restore(saved);
         check(UiFlowTest.<Ui.Segmented>field(restored,"sectionTabs").selected()==2&&UiFlowTest.<Ui.Segmented>field(restored,"cellTabs").selected()==1,"form survives recreation");
 
@@ -160,6 +165,10 @@ public final class UiFlowTest extends Instrumentation {
                 check(otherHeading.getVisibility()==View.VISIBLE&&other.getVisibility()==View.GONE,"other observations collapsed by default");
                 otherHeading.performClick();
                 check(other.getVisibility()==View.VISIBLE&&texts(other).stream().anyMatch(t->t.getText().toString().equals("PCI 78")),"unassigned NR available after expansion");
+                TextView otherNotice=field(cells,"otherNotice");layout(cells,scaledUi.dp(320));
+                check(otherNotice.getTop()-otherHeading.getBottom()==scaledUi.dp(12)&&other.getTop()-otherNotice.getBottom()==scaledUi.dp(12),"notice has balanced spacing even when wrapped at scale "+scale);
+                check(otherNotice.getLeft()==other.getLeft()&&otherNotice.getRight()==other.getRight(),"notice aligns with observation card");
+                otherHeading.performClick();check(otherNotice.getVisibility()==View.GONE&&other.getVisibility()==View.GONE,"collapse removes notice and its margins");otherHeading.performClick();
                 check(UiFlowTest.<Map<View,RadioCell>>field(cells,"targetViews").isEmpty(),"unrelated NR cannot fill SIM2 target");
                 RadioCell hint=RadioCell.measured(true,false,504990,android.telephony.CellInfo.UNAVAILABLE,android.telephony.CellInfo.UNAVAILABLE,"QMI NAS · 仅频点");
                 RadioCell lteIdentity=lte.withIdentity(100),conflict=RadioCell.measured(false,true,1650,111,-92,"QMI NAS").withIdentity(200);

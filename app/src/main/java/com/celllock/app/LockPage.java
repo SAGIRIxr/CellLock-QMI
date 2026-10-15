@@ -48,7 +48,7 @@ final class LockPage extends ScrollView {
     private Button refresh,cellApply,cellClear,bandApply,bandAll,bandCurrent,bandNone,ratApply,restoreButton;
     private ModemState state;
     private RadioCell serving;
-    private boolean busy,changingFields,ratEdited,nrModeEdited;
+    private boolean busy,changingFields,ratEdited,nrModeEdited,nrCombinedOnly;
     private String ratArg;
     private int chosenRat=-1,chosenNrMode=-1;
 
@@ -139,6 +139,11 @@ final class LockPage extends ScrollView {
     }
 
     void setBusy(boolean value) {busy=value;updateEnabled();}
+    void setNrCombinedOnly(boolean value) {
+        nrCombinedOnly=value;
+        if(value)nrTargetTabs.select(0);
+        renderBandChoices();
+    }
     void setServingCell(RadioCell cell) {serving=cell;updateEnabled();}
 
     void fillTarget(RadioCell cell) {
@@ -200,7 +205,7 @@ final class LockPage extends ScrollView {
         }
         if(!any)bandChoices.addView(ui.caption("硬件未提供此制式的可选频段。"));
         boolean different=nr&&nrTargetTabs.selected()==0&&state.nrSa!=null&&state.nrNsa!=null&&!state.nrSa.equals(state.nrNsa);
-        bandHint.setText(different?"SA 与 NSA 当前不同；初始勾选两者共有频段。":"只列本机支持的频段；小字为频率提示。");updateBandCount();updateEnabled();
+        bandHint.setText(nr&&nrCombinedOnly?"SA＋NSA 同步设置：本机不支持独立设置 SA 或 NSA 频段。":different?"SA 与 NSA 当前不同；初始勾选两者共有频段。":"只列本机支持的频段；小字为频率提示。");updateBandCount();updateEnabled();
     }
 
     private void updateBandCount() {int chosen=0,total=0;for(int group:visibleGroups()){BitSet hw=hardwareBands(group);if(hw!=null){total+=hw.cardinality();if(bandDrafts[group]!=null){BitSet selected=(BitSet)bandDrafts[group].clone();selected.and(hw);chosen+=selected.cardinality();}}}bandCount.setText(total==0?"":"已选 "+chosen+" / "+total);}
@@ -282,11 +287,13 @@ final class LockPage extends ScrollView {
     private void showSection(){for(int i=0;i<sections.length;i++)sections[i].setVisibility(sectionTabs.selected()==i?VISIBLE:GONE);updateEnabled();}
     private void updateCellUi() {
         boolean nr=cellTabs.selected()==0,freq=nrKindTabs.selected()==1;lteFields.setVisibility(nr?GONE:VISIBLE);nrFields.setVisibility(nr?VISIBLE:GONE);pciColumn.setVisibility(freq?GONE:VISIBLE);nrBandColumn.setVisibility(freq?GONE:VISIBLE);
+        cellClear.setText(nr?"解除 5G 小区锁":"解除 LTE 小区锁");
         nrUnknownHint.setVisibility(nr&&state!=null&&!state.nrKnown?VISIBLE:GONE);nrUnknownHint.setText("5G 小区状态未完整返回，写入后会尝试回读确认。");updateEnabled();
     }
     private void updateEnabled() {
         if(cellApply==null||bandApply==null||ratApply==null)return;
         for(View control:controls)Ui.enable(control,!busy);for(View chip:bandChips)Ui.enable(chip,!busy);for(Button preset:presetButtons)Ui.enable(preset,!busy);
+        if(nrCombinedOnly){Ui.enable(nrTargetTabs.getChildAt(1),false);Ui.enable(nrTargetTabs.getChildAt(2),false);}
         refresh.setText(busy?"处理中":"刷新");boolean available=false,hasSelection=false;for(int group:visibleGroups()){available|=present(hardwareBands(group));hasSelection|=present(bandDrafts[group]);}
         Ui.enable(bandAll,!busy&&available);Ui.enable(bandNone,!busy&&available);Ui.enable(bandApply,!busy&&available&&hasSelection);
         int group=bandTabs.selected()==0?nrGroup():LTE;boolean current=bandTabs.selected()!=2&&serving!=null&&serving.band>0&&serving.nr==(bandTabs.selected()==0)&&present(hardwareBands(group))&&hardwareBands(group).get(serving.band);Ui.enable(bandCurrent,!busy&&current);

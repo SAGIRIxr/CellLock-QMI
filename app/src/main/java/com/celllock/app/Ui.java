@@ -1,6 +1,9 @@
 package com.celllock.app;
 
 import android.content.Context;
+import android.app.AlertDialog;
+import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
 import android.content.res.ColorStateList;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -19,6 +22,7 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.Spinner;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 /** 界面配色与控件工厂。所有页面都用代码构建，保证风格一致。 */
@@ -91,6 +95,33 @@ final class Ui {
         View line = new View(context);
         line.setBackgroundColor(LINE);
         return line;
+    }
+
+    AlertDialog dialog(String title, String subtitle, LinearLayout body, String action, Runnable apply, String cancel) {
+        int maxHeight=Math.round(context.getResources().getDisplayMetrics().heightPixels*.84f);
+        LinearLayout content=new LinearLayout(context) {
+            @Override protected void onMeasure(int width,int height) { super.onMeasure(width,View.MeasureSpec.makeMeasureSpec(Math.min(maxHeight,View.MeasureSpec.getSize(height)),View.MeasureSpec.AT_MOST)); }
+        };
+        content.setOrientation(LinearLayout.VERTICAL);content.setPadding(dp(24),dp(24),dp(24),dp(20));content.setBackground(shape(CARD,24,0));
+        TextView heading=text(title,21,INK);heading.setTypeface(null,Typeface.BOLD);content.addView(heading,fill(-2));
+        if(subtitle!=null&&!subtitle.isEmpty()){gap(content,7);content.addView(caption(subtitle),fill(-2));}
+        gap(content,18);ScrollView scroll=new ScrollView(context);scroll.setFillViewport(false);scroll.setClipToPadding(false);scroll.addView(body);content.addView(scroll,new LinearLayout.LayoutParams(-1,-2,1));
+        gap(content,18);LinearLayout footer=row();content.addView(footer,fill(-2));
+        AlertDialog dialog=new AlertDialog.Builder(context).setView(content).create();
+        if(cancel!=null){Button back=button(cancel,false);back.setMinHeight(dp(48));back.setPadding(dp(12),dp(10),dp(12),dp(10));back.setOnClickListener(v->dialog.dismiss());footer.addView(back,weight(-2));gap(footer,10);}
+        Button primary=button(action,true);primary.setMinHeight(dp(48));primary.setPadding(dp(12),dp(10),dp(12),dp(10));primary.setOnClickListener(v->{dialog.dismiss();if(apply!=null)apply.run();});footer.addView(primary,weight(-2));
+        dialog.setOnShowListener(ignored->{
+            android.view.Window window=dialog.getWindow();if(window==null)return;
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));window.getDecorView().setPadding(0,0,0,0);
+            window.setLayout(Math.min(context.getResources().getDisplayMetrics().widthPixels-dp(40),dp(440)),-2);
+        });
+        return dialog;
+    }
+
+    LinearLayout choice(LinearLayout parent,String title,String description,Runnable action) {
+        LinearLayout choice=row();choice.setPadding(dp(15),dp(16),dp(15),dp(16));choice.setBackground(ripple(SOFT_GREEN,16));
+        LinearLayout labels=column();TextView name=text(title,16,INK);name.setTypeface(null,Typeface.BOLD);labels.addView(name);gap(labels,6);labels.addView(caption(description));choice.addView(labels,weight(-2));gap(choice,10);choice.addView(text("›",24,GREEN));
+        choice.setOnClickListener(v->action.run());choice.setFocusable(true);choice.setContentDescription(title+"，"+description);parent.addView(choice,fill(-2));return choice;
     }
 
     // ---------- 文字 ----------

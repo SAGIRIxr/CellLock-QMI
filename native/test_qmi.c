@@ -8,7 +8,7 @@ static unsigned checks;
 #define CHECK(x) do { ++checks; if (!(x)) { fprintf(stderr, "CHECK failed at %d: %s\n", __LINE__, #x); exit(1); } } while (0)
 static State modem;
 static int raw_mode, raw_length, fail_message, fail_tlv, fail_error, fail_transport;
-static int ignore_tlv, force_nr_ack, observed_message, observed_length, query_count, set_count;
+static int ignore_tlv, force_nr_ack, observed_message, observed_length, query_count, set_count, combined_partial;
 static uint8_t raw_reply[QMI_MAX], observed[1024];
 
 static void response_start(Reply *r, unsigned id, int result, int error) {
@@ -33,6 +33,7 @@ static void fresh(void) {
     ignore_tlv = force_nr_ack = observed_message = observed_length = query_count = set_count = 0;
     mock_calls = mock_lookup_error = mock_connect_error = mock_socket_error = 0;
     mock_clock = 0; nas_fd = 12; mutated = writes_sent = writes_accepted = 0;
+    nr_combined_only = step_count = step_writes = step_accepted = combined_partial = 0;
     last_result = last_error = -1; report("arguments", "参数错误");
 }
 static Hardware hardware(void) {
@@ -50,9 +51,15 @@ static ssize_t exchange(int fd, uint8_t *buf, size_t length, int timeout_ms, con
     if (raw_mode) { memcpy(buf, raw_reply, raw_length); put16(buf + 1, transaction); return raw_length; }
     Reply request_frame = {.n = (int)length}; memcpy(request_frame.bytes, buf, length);
     int n = 0; const uint8_t *value = NULL;
-    unsigned field = id == NAS_SET_SYS_SEL && length > 11 ? buf[11] : 0;
+    unsigned field = id == NAS_SET_SYS_SEL && length > 7 ? buf[7] : 0;
+    if (field == SET_DURATION && length > 11) field = buf[11];
     if (id == NAS_SET_SYS_SEL || id == NAS_LTE_CELL_SET || id == NAS_NR_CELL_SET) ++set_count;
     else ++query_count;
+    if (id == NAS_SET_SYS_SEL && has_tlv(&request_frame, SET_DURATION) &&
+        (field == SET_NR_MODE || field == SET_NR_SA || field == SET_NR_NSA)) {
+        Reply error; response_start(&error, id, 1, 17);
+        memcpy(buf, error.bytes, error.n); put16(buf + 1, transaction); return error.n;
+    }
     if ((int)id == fail_message && (!fail_tlv || (int)field == fail_tlv)) {
         if (fail_transport) { mock_clock += 1800; return -fail_transport; }
         Reply error; response_start(&error, id, 1, fail_error);
@@ -63,7 +70,7 @@ static ssize_t exchange(int fd, uint8_t *buf, size_t length, int timeout_ms, con
         if (field == SET_LTE_EXT || field == SET_LTE) { memset(modem.pref.lte, 0, 32); memcpy(modem.pref.lte, value, n); }
         else if (field == SET_NR_SA) memcpy(modem.pref.sa, value, 64);
         else if (field == SET_NR_NSA) memcpy(modem.pref.nsa, value, 64);
-        else if (field == SET_NR_COMBINED) { memcpy(modem.pref.sa, value, 64); memcpy(modem.pref.nsa, value, 64); }
+        else if (field == SET_NR_COMBINED) { memcpy(modem.pref.sa, value, 64); if(!combined_partial)memcpy(modem.pref.nsa, value, 64); }
         else if (field == SET_MODE) modem.pref.rat = le16(value);
         else if (field == SET_NR_MODE) modem.pref.nr_mode = (int)le32(value);
         else if (field == SET_LEGACY) modem.pref.legacy = le64(value);
@@ -183,7 +190,7 @@ static void test_payloads(void) {
     CHECK(p[10] == 1 && le32(p + 11) == 504990 && le32(p + 15) == 1);
     CHECK(nr_cell_set(NR_LOCK_NONE, 0, 0, 0, 0) && observed_length == 14 && le32(observed + 10) == 2);
     CHECK(rat_set(RAT_LTE)); CHECK(observed[7] == SET_DURATION && observed[10] == 1 && observed[11] == SET_MODE && le16(observed + 14) == RAT_LTE);
-    CHECK(nr_mode_set(2) && observed[11] == SET_NR_MODE && le32(observed + 14) == 2);
+    CHECK(nr_mode_set(2) && observed_length == 14 && observed[7] == SET_NR_MODE && le32(observed + 10) == 2);
     CHECK(legacy_set(gsm_bits(850)) && observed[11] == SET_LEGACY && le64(observed + 14) == gsm_bits(850));
     fresh(); CHECK(connect_nas(1) && observed_message == NAS_BIND && observed[10] == 1 && !mutated);
     fresh(); fail_message = NAS_BIND; fail_error = 3; CHECK(!connect_nas(0) && set_count == 0 && !strcmp(stage, "bind"));
@@ -239,7 +246,50 @@ static void test_reset(void) {
     CHECK(run_job(&j, &hw, &s) == 1 && lte_cell_clear(&s.lte) && nr_cell_clear(&s.nr) && s.pref.nr_mode == 0 && s.pref.rat == RAT_KNOWN);
     CHECK(writes_sent == writes_accepted && writes_sent == 8 && (s.pref.legacy & (1ull << 63)));
 }
+static void test_exact_and_compatibility(void) {
+    fresh();Hardware nr_hw=hardware();State nr_state=modem;Job nr_job={.cmd=CMD_NR_MODE,.nr_mode=2};
+    CHECK(run_job(&nr_job,&nr_hw,&nr_state)==1&&nr_state.pref.nr_mode==2&&writes_sent==1&&writes_accepted==1);
+    nr_job.nr_mode=0;
+    CHECK(run_job(&nr_job,&nr_hw,&nr_state)==1&&nr_state.pref.nr_mode==0&&writes_sent==2);
+    nr_job=(Job){.cmd=CMD_BAND_NR,.sa=1};bit_set(nr_job.mask,41);
+    CHECK(run_job(&nr_job,&nr_hw,&nr_state)==1&&bit_has(nr_state.pref.sa,41)&&bit_has(nr_state.pref.nsa,78)&&!nr_combined_only);
+    nr_job.sa=0;nr_job.nsa=1;memset(nr_job.mask,0,sizeof nr_job.mask);bit_set(nr_job.mask,1);
+    CHECK(run_job(&nr_job,&nr_hw,&nr_state)==1&&bit_has(nr_state.pref.sa,41)&&bit_has(nr_state.pref.nsa,1)&&!nr_combined_only);
+    fresh();Hardware hw=hardware();State s=modem;Job j={.cmd=CMD_BAND_LTE,.exact=1};
+    bit_set(j.mask,3);bit_set(j.mask,250);
+    CHECK(!pref_matches(&j,&hw,&s.pref,0));
+    CHECK(run_job(&j,&hw,&s)==1&&writes_sent==1&&bit_has(s.pref.lte,250));
+    CHECK(run_job(&j,&hw,&s)==1&&writes_sent==1);
+    memset(j.mask,0,sizeof j.mask);CHECK(run_job(&j,&hw,&s)==1&&mask_empty(s.pref.lte,32));
+    fresh();s=modem;j=(Job){.cmd=CMD_LEGACY,.exact=1,.legacy=gsm_bits(850)|wcdma_bits(1)};
+    CHECK(run_job(&j,&hw,&s)==1&&s.pref.legacy==j.legacy&&!(s.pref.legacy&(1ull<<63)));
+    char *lte[]={"test","restore-lte","0","none"};CHECK(parse_job(4,lte,&j)&&j.exact&&mask_empty(j.mask,64));
+    lte[3]="all";CHECK(!parse_job(4,lte,&j));lte[3]="257";CHECK(!parse_job(4,lte,&j));
+    char *legacy[]={"test","restore-legacy","0","ffffffffffffffff"};CHECK(parse_job(4,legacy,&j)&&j.legacy==UINT64_MAX);
+    legacy[3]="-1";CHECK(!parse_job(4,legacy,&j));
+    char *nr[]={"test","restore-nr-combined","0","sa","41"};CHECK(!parse_job(5,nr,&j));
+    nr[3]="both";CHECK(parse_job(5,nr,&j)&&j.combined&&j.exact);
+    fresh();s=modem;j=(Job){.cmd=CMD_BAND_NR,.sa=1,.nsa=1};bit_set(j.mask,41);
+    fail_message=NAS_SET_SYS_SEL;fail_tlv=SET_NR_SA;fail_error=17;
+    CHECK(run_job(&j,&hw,&s)==1&&nr_combined_only&&writes_sent==2&&writes_accepted==1&&bit_has(s.pref.sa,41)&&bit_has(s.pref.nsa,41));
+    fresh();s=modem;fail_message=NAS_SET_SYS_SEL;fail_tlv=SET_NR_NSA;fail_error=17;
+    CHECK(run_job(&j,&hw,&s)==1&&nr_combined_only&&writes_sent==3&&writes_accepted==2);
+    fresh();s=modem;j.nsa=0;fail_message=NAS_SET_SYS_SEL;fail_tlv=SET_NR_SA;fail_error=17;
+    CHECK(run_job(&j,&hw,&s)==0&&!nr_combined_only&&writes_sent==1&&bit_has(s.pref.nsa,78));
+    fresh();s=modem;j.nsa=1;fail_message=NAS_SET_SYS_SEL;fail_tlv=SET_NR_SA;fail_transport=ETIMEDOUT;
+    CHECK(run_job(&j,&hw,&s)==0&&writes_sent==1&&!nr_combined_only);
+    fresh();s=modem;fail_message=NAS_SET_SYS_SEL;fail_tlv=SET_NR_SA;fail_error=17;modem.pref.has_nsa=0;
+    CHECK(run_job(&j,&hw,&s)==0&&writes_sent==1&&!nr_combined_only);
+    fresh();s=modem;fail_message=NAS_SET_SYS_SEL;fail_tlv=SET_NR_SA;fail_error=17;combined_partial=1;
+    CHECK(run_job(&j,&hw,&s)==0&&writes_accepted==1&&bit_has(s.pref.sa,41)&&!bit_has(s.pref.nsa,41));
+    fresh();s=modem;j=(Job){.cmd=CMD_RESET};force_nr_ack=1;s.nr.known=0;s.nr.ack_only=1;
+    CHECK(run_job(&j,&hw,&s)==-1&&step_count==7&&!strcmp(steps[6].status,"unknown")&&!strcmp(steps[0].status,"unchanged"));
+    fresh();s=modem;j=(Job){.cmd=CMD_BAND_NR,.sa=1,.nsa=1,.exact=1};bit_set(j.mask,78);bit_set(j.mask,257);
+    CHECK(run_job(&j,&hw,&s)==1&&bit_has(s.pref.sa,257)&&bit_has(s.pref.nsa,257));
+    fresh();s=modem;j.combined=1;memset(j.mask,0,sizeof j.mask);bit_set(j.mask,41);
+    CHECK(run_job(&j,&hw,&s)==1&&writes_sent==1&&observed_message==NAS_GET_SYS_SEL);
+}
 int main(void) {
-    test_arguments(); test_frames(); test_payloads(); test_jobs(); test_reset();
+    test_arguments(); test_frames(); test_payloads(); test_jobs(); test_reset();test_exact_and_compatibility();
     printf("PASS: %u pure protocol checks (mock transport; no device/network access)\n", checks); return 0;
 }

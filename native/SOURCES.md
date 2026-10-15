@@ -22,7 +22,9 @@
 
 所有多字节整数均为小端。频段掩码的第 `band - 1` 位对应该频段。NR mode 的 0/1/2 分别为 SA+NSA / NSA / SA；RAT 的 GSM/WCDMA/LTE/NR 为 `0x04/0x08/0x10/0x40`。
 
-错误码 71（INVALID_QMI_COMMAND）和 94（NOT_SUPPORTED）另核对 [libqmi 的 QmiProtocolError 原始定义](https://github.com/linux-mobile-broadband/libqmi/blob/main/src/libqmi-glib/qmi-errors.h)（2026-10-13 读取）。只有这两种明确拒绝允许尝试旧字段；超时、内部错误及其他失败不触发第二种写法。没有复制 libqmi 实现代码。
+NR mode、独立 SA / NSA 频段请求省略可选 duration，使用协议默认的 Permanent；其他偏好仍显式携带 duration。字段映射和默认值另核对 [2020 NAS IDL 的公开镜像](https://github.com/comprehensive9/vendor_qcom_proprietary/blob/36fc163a534963a5b3af52186af5efcc63401ad2/qcril-qmi-services-headers/network_access_service_v01.h#L5907)与[编码表](https://github.com/comprehensive9/vendor_qcom_proprietary/blob/36fc163a534963a5b3af52186af5efcc63401ad2/qcril-qmi-services/network_access_service_v01.c#L4844)；[同版本 QCRIL 模式调用](https://github.com/comprehensive9/vendor_qcom_proprietary/blob/36fc163a534963a5b3af52186af5efcc63401ad2/qcril-nr/modules/nas/src/qcril_qmi_nas2.cpp#L2196)只发送 NR mode。这是第三方托管的厂商资料镜像，并非 Qualcomm 官方发布或开源授权；本项目仅独立实现报文字段，不复制厂商头文件或实现，也不将其纳入编译、打包。此处理不扩大 NR 小区锁能力，所有写入仍要求回读一致。
+
+错误码 17（MISSING_ARG）、71（INVALID_QMI_COMMAND）和 94（NOT_SUPPORTED）另核对 [libqmi 的 QmiProtocolError 原始定义](https://github.com/linux-mobile-broadband/libqmi/blob/d9e8af5cae7fdf9749baf87606568d3af4d03082/src/libqmi-glib/qmi-errors.h)。LTE 扩展字段仅在 71 / 94 时尝试旧字段；NR 独立频段字段在 17 / 71 / 94 时，仅 SA、NSA 目标相同且两者原值可读的请求允许尝试合并字段，并分别回读确认。超时、内部错误不触发第二种写法。没有复制 libqmi 实现代码。
 
 成功要求逻辑写入获确认且随后读取目标字段一致。频段命令按硬件支持的位验证；“恢复初始设置”的完整列表、RAT、NR mode 与 `legacyMask` 另由应用最终读取逐位比较。legacy 写入保留其他制式与未命名位。NR 查询只有成功结果 TLV 时保持状态未知，即使清除命令返回成功也不宣称已解除。“全部开放”分别核验 SA、NSA、NR mode、legacy、LTE、RAT 和小区锁，部分失败不会报告整体成功。没有基于未知原值的自动回滚。
 

@@ -7,7 +7,7 @@ $output=Join-Path $PSScriptRoot 'ui-test/build'
 $testClasses=Join-Path $PSScriptRoot 'ui-classes'
 New-Item -ItemType Directory -Force $output,$testClasses | Out-Null
 function Check-Exit { if($LASTEXITCODE -ne 0){throw "UI test build/ADB failed: $LASTEXITCODE"} }
-& "$Jdk/bin/javac.exe" -encoding UTF-8 -cp "$classes;$android" -d $testClasses "$PSScriptRoot/UiFlowTest.java" "$PSScriptRoot/DeviceReadingTest.java"; Check-Exit
+& "$Jdk/bin/javac.exe" -encoding UTF-8 -cp "$classes;$android" -d $testClasses "$PSScriptRoot/UiFlowTest.java" "$PSScriptRoot/DeviceReadingTest.java" "$PSScriptRoot/DialogFlowTest.java" "$PSScriptRoot/ModemFlowTest.java"; Check-Exit
 & "$Jdk/bin/jar.exe" cf "$output/test.jar" -C $testClasses .; Check-Exit
 & "$tools/d8.bat" --min-api 30 --lib $android --classpath $classes --output $output "$output/test.jar"; Check-Exit
 & "$tools/aapt2.exe" link -I $android --manifest "$PSScriptRoot/ui-test/AndroidManifest.xml" -o "$output/unsigned.apk"; Check-Exit
@@ -22,4 +22,8 @@ try {
     Check-Exit
     $result
     if(($result -join "`n") -notmatch 'PASS: \d+ Android UI/command checks'){throw 'Android UI checks failed'}
+    $dialogs=& adb shell am instrument -w com.celllock.app.tests/com.celllock.app.DialogFlowTest
+    Check-Exit
+    $dialogs
+    if(($dialogs -join "`n") -notmatch 'PASS: \d+ actual dialog/lifecycle checks'){throw 'Android dialog checks failed'}
 } finally { & adb uninstall com.celllock.app.tests | Out-Null }

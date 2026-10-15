@@ -1,6 +1,7 @@
 .gradle/
 **/build/
 local.properties
+/local-diagnostics/
 tests/classes/
 tests/*.png
 tests/*.xml

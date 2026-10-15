@@ -5,7 +5,11 @@
 
 CellLock 是面向已 Root 高通 Android 手机的本地网络设置工具，当前实测设备为小米 14 Pro / SM8650 / Android 14。应用为 Java 原生界面，后端为 NDK 编译的 arm64 C 可执行程序，经 Root 使用 QMI / QRTR。没有联网权限、广告、账号或会员模块。
 
-当前源码版本为 **0.4.7 / versionCode 11**，0.4 系列仍为本地验证版本，公开下载入口保留 v0.3.0。以下旧版测试数量和行为说明按版本记录，不代表当前版本的完整验收结果；最新摘要见下方“当前读取与分类约定”。
+当前源码版本为 **0.4.8 / versionCode 12**，0.4 系列仍为本地验证版本，公开下载入口保留 v0.3.0。以下旧版测试数量和行为说明按版本记录，不代表当前版本的完整验收结果；本轮现场验证记录仅本地保存，不纳入源码仓库；读取约定见下方。
+
+0.4.8 将普通选频段与初始配置恢复分开：`restore-lte`、`restore-nr` 和 `restore-legacy` 使用完整原值比较和写回，快照沿用 schema 2、原有保存键与首次保存规则。NR 独立字段明确拒绝后，只有 SA / NSA 目标相同的请求可使用合并字段；缓存仅在已验证的当前卡槽会话中生效，普通读取不做写探针。全部开放输出逐项结构化结果；`OperationReport` / `ResultItem` 供结果、日志及旋转恢复共用，界面不解析中文回执判断状态。
+
+三页标题统一 24sp、移除右上 CellLock；其他观测说明在展开时显示，上下 margin 各 12dp，收起不留说明间距。`Ui.dialog` 复用现有配色和控件，固定标题与底部操作，正文滚动；确认任务、结果、记录展开与滚动位置在 Bundle 中恢复，确认后仍重新核验真实 SIM。设备页和锁定页共用 Session 的首次自动读取条件；Root 拒绝后不自动重复申请。
 
 0.4 在 `modifications` 分支本地接入自适应读取，未发布、未上传。正式 Activity 已在小米 M2012K11AC / SM8250 / Android 13 / MIUI 14 验证：电话、精确及近似位置权限全部拒绝、系统定位关闭时仍可取得两卡 Root 电话测量与设备级 NR 邻区；还验证了普通接口、厂商 AppOps 受限回退、Root 拒绝及恢复、旋转和后台退出。
 
@@ -61,7 +65,7 @@ CellLock 是面向已 Root 高通 Android 手机的本地网络设置工具，�
 | `LockPage.java` | 小区 / 频段 / 制式表单，硬件频段芯片，参数校验，生成待确认命令 |
 | `DevicePage.java` | 机型 / SoC / 版本、硬件频段、权限、后端状态与记录 |
 | `Backend.java` | 订阅 ID 转物理卡槽，调用随包 ELF，收集与解析 JSON |
-| `Models.java` | `Rat`、`ModemState`、`ModemResult`；未知状态和偏好 / 硬件分离 |
+| `Models.java` | 制式、状态、逐项操作结果及记录模型；未知状态和偏好 / 硬件分离 |
 | `Snapshots.java` | 每张卡首次完整偏好快照、恢复命令生成、最终全值匹配 |
 | `RadioCell.java`、`Bands.java` | 系统 CellInfo 简化、频段查找与 SCS 建议；建议值不是测量值 |
 | `SimStatus.java` | 区分电话未授权、SIM 信息读取受限、无卡和可用订阅 |
@@ -213,6 +217,12 @@ Root 子进程退出保护可运行 `./tests/run-root-shell.ps1 -JsonJar $jsonJa
 ./tests/run-ui.ps1 -Sdk $env:ANDROID_SDK_ROOT
 ```
 
+0.4.8 的默认脚本还执行 `DialogFlowTest`：启动真实 Activity 和弹窗，检查恢复选择 / 确认 / 结果 / 操作记录的旋转重建、详情与滚动恢复、底部按钮可达，不确认写入；完成窗口与临时日志清理后才发送测试结束回执。`UiFlowTest` 新增合并能力控件、动态清锁名称及其他观测说明上下各 12dp 检查。
+
+`ModemFlowTest` 是显式真实写入验收，默认脚本不运行。只在已授权且确认可恢复的设备执行：要求 SIM 1 映射可信、完整原值已保存、SA / NSA 原值相同且支持 n1 / n41；会选择与原值不同的 n1 或 n41，检查独立频段写入后控件仍可用、恢复原快照、请求清锁及全部开放，并在 finally 精确恢复测试前偏好、完整回读。清理阶段先关闭并等待 Session 的整个执行队列结束，再恢复测试前偏好；不会在 40 秒验收等待超时后与后台写入并行恢复，因此清理可能超过该等待时间。单项恢复失败或抛异常时继续尝试其余项目，最后统一回读并汇总失败；线程中断也不能跳过排队等待，原中断标志在清理结束后恢复。测试不创建新的小区锁，不能恢复不可读取的既有锁定目标，不适合作为任意机型的通用测试。重新安装 `tests/ui-test/build/ui-checks.apk` 后显式运行 `adb shell am instrument -w com.celllock.app.tests/com.celllock.app.ModemFlowTest`，结束后卸载 `com.celllock.app.tests`，外部再独立比对双卡原值、快照与系统开关。本轮现场结果仅保存在本地诊断目录，不纳入源码仓库。
+
+恢复清理的异常路径可用 `tests/run-modem-recovery.ps1 -AndroidJar <android.jar> -JsonJar <JSON-java.jar> -Jdk <JDK目录>` 单独在主机验证。先编译当前 Debug Java 类；该测试直接调用 `ModemFlowTest` 的清理实现，模拟待完成写入、线程中断、单项拒绝与抛异常，并检查后续恢复和最终回读，不安装测试 APK、不调用 Root 或基带。
+
 测试 APK 还包含显式只读真机验收 `DeviceReadingTest`，默认 UI 脚本不会运行它。单独重新安装 `tests/ui-test/build/ui-checks.apk` 后，运行 `adb shell am instrument -w com.celllock.app.tests/com.celllock.app.DeviceReadingTest`：使用实际 App UID、现有权限、Root 及 `RadioReader`，逐卡核对新 QMI 查询、服务身份、频段补入及 DIAG 候选；真实数据也进入页面，检查数量、折叠和候选点击。有完整身份冲突时要求记录分离且不可误用，不强迫合并。完成后卸载 `com.celllock.app.tests`；权限组合验证应在外部记录并恢复原有授权、标志与 AppOps，测试类本身不修改权限或网络设置。它要求被测设备接口可用且采样期间服务稳定，不是通用设备能力判定器。
 
 0.4.4 的页面副标题、SIM 来源后缀、当前连接详情及采集来源说明已隐藏；邻区保留来源和信号质量，底层 `details` 与诊断能力保持。锁定页按制式 / 频段 / 小区、NR / LTE 排序，读取失败仍显示未知。NAS 仅补充新观测，不覆写已有电话数据；相同制式、频点、PCI 且身份不冲突时去重，纯频点提示不重复已有小区。服务选择先比较可信映射，再比较 NR / LTE 和身份完整度，避免补读 NR 抢占已映射 LTE。
@@ -284,7 +294,7 @@ adb shell /data/local/tmp/celllock-test-qmi
 4. **收敛 lint 与 UI**：逐项复核 warnings；Root 电话隐藏 API 有明确跨 ROM 风险，失败必须回退，不能宣称通用支持。不同字体缩放 / 屏幕宽度，长频段列表和日志不能遮挡恢复入口。
 5. **更广机型适配**：先只读确认服务、消息与字段，再有条件开放写入；未知字段保留原始证据，不套旧 EFS 布局或自动修改基带环境。
 
-发布时更新 `versionCode` / `versionName`，重新构建 native 和 APK，运行纯测试及有影响的真机回归，更新 `VALIDATION.md`、许可与来源，再打包源码。公开交付不包含 `local.properties`、签名私钥、个人路径、设备标识或未经整理的原始设备记录。
+发布时更新 `versionCode` / `versionName`，重新构建 native 和 APK，运行纯测试及有影响的真机回归，将现场验证记录保存在已忽略的 `local-diagnostics/`，更新许可与来源，再打包源码。公开交付不包含 `local.properties`、签名私钥、个人路径、设备标识或未经整理的原始设备记录。
 
 ## 9. 许可与来源
 
