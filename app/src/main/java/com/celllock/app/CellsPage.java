@@ -28,6 +28,7 @@ final class CellsPage extends ScrollView {
         void onNeedPermission();
         void onServingChanged(RadioCell cell);
         void onSimChanged();
+        default void onSaveCell(RadioCell cell, RadioCell serving) {}
     }
 
     private static final long INTERVAL_MS = 5_000, TIMEOUT_MS = 30_000;
@@ -77,6 +78,15 @@ final class CellsPage extends ScrollView {
         updatePolicy();
     }
 
+    boolean currentlyObserved(org.json.JSONObject record) {
+        for(RadioCell cell:targetViews.values())if(matchesSaved(record,cell))return true;
+        return serving!=null&&matchesSaved(record,serving);
+    }
+    private boolean matchesSaved(org.json.JSONObject record,RadioCell cell) {
+        return (cell.mapped||cell.hasTarget(serving))&&cell.recentMeasurement()&&record.optBoolean("nr")==cell.nr&&record.optInt("arfcn",-1)==cell.arfcn&&record.optInt("pci",-1)==cell.pci
+                && (record.optInt("band")==0||cell.targetBand(serving)==record.optInt("band"));
+    }
+
     private void build(LinearLayout page) {
         LinearLayout heading = ui.row();
         heading.addView(ui.title("当前连接"), ui.weight(-2));
@@ -91,6 +101,8 @@ final class CellsPage extends ScrollView {
         ui.gap(page, 9);
 
         LinearLayout hero = ui.card(page);
+        hero.setOnLongClickListener(v -> { if (!busy && serving != null && serving.mapped) { host.onSaveCell(serving, serving); return true; } return false; });
+        hero.setContentDescription("当前服务小区，长按保存并编辑备注");
         hero.setPadding(ui.dp(19), ui.dp(17), ui.dp(19), ui.dp(15));
         LinearLayout top = ui.row();
         rat = ui.pill("待刷新", Ui.GREEN, Ui.SOFT_GREEN);
@@ -397,6 +409,7 @@ final class CellsPage extends ScrollView {
 
     private void addNeighbor(LinearLayout group, RadioCell cell) {
         LinearLayout item = ui.row();
+        item.setOnLongClickListener(v -> { if (!busy && (cell.mapped || cell.hasTarget(serving))) { host.onSaveCell(cell, serving); return true; } return false; });
         item.setPadding(ui.dp(14), ui.dp(12), ui.dp(12), ui.dp(12));
         item.setBackground(ui.ripple(Ui.CARD, 16));
         item.addView(ui.pill(cell.nr ? "NR" : "LTE", cell.nr ? Ui.GREEN : Ui.MUTED,

@@ -28,7 +28,7 @@ public final class UiFlowTest extends Instrumentation {
         List<String[]> commands;
         public void onRefresh() { throw new AssertionError("unexpected refresh"); }
         public void onApply(String title,String summary,List<String[]> value) { commands=value; }
-        public void onRestore() { throw new AssertionError("unexpected restore"); }
+        public void onSavedCells() { throw new AssertionError("unexpected saved list"); }
         public void onMessage(String title,String message) { throw new AssertionError(title+": "+message); }
     }
     private static void check(boolean value,String message) { checks++; if(!value)throw new AssertionError(message); }

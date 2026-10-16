@@ -21,6 +21,7 @@ final class LockPage extends ScrollView {
     interface Host {
         void onRefresh();
         void onApply(String title, String summary, List<String[]> commands);
+        default void onSavedCells() {}
         void onMessage(String title, String message);
     }
 
@@ -85,6 +86,8 @@ final class LockPage extends ScrollView {
     private void buildCell(LinearLayout parent) {
         cellTabs=ui.new Segmented(new String[]{"5G NR","LTE"},index->updateCellUi());controls.add(cellTabs);parent.addView(cellTabs,ui.fill(-2));ui.gap(parent,13);
         LinearLayout card=ui.card(parent);
+        LinearLayout heading=ui.row();heading.addView(ui.title("锁定目标"),ui.weight(-2));
+        Button saved=ui.textButton("已保存小区 ›");saved.setTextSize(13);saved.setContentDescription("已保存小区");saved.setOnClickListener(v->{if(!busy)host.onSavedCells();});controls.add(saved);heading.addView(saved,new LinearLayout.LayoutParams(-2,ui.dp(48)));card.addView(heading,ui.fill(-2));ui.gap(card,8);
         lteFields=ui.column();LinearLayout lteRow=ui.row();lteArfcn=ui.labeledInput(lteRow,"EARFCN","0–65535");ui.gap(lteRow,12);ltePci=ui.labeledInput(lteRow,"PCI","0–503");lteFields.addView(lteRow);card.addView(lteFields);
         nrFields=ui.column();nrKindTabs=ui.new Segmented(new String[]{"锁小区 · PCI","锁频点 · ARFCN"},index->updateCellUi());controls.add(nrKindTabs);nrFields.addView(nrKindTabs,ui.fill(-2));ui.gap(nrFields,15);
         LinearLayout nrTop=ui.row();nrArfcn=ui.labeledInput(nrTop,"NR-ARFCN","0–3279165");ui.gap(nrTop,12);nrPci=ui.labeledInput(nrTop,"PCI","0–1007");pciColumn=(LinearLayout)nrPci.getParent();nrFields.addView(nrTop);ui.gap(nrFields,15);
@@ -151,6 +154,15 @@ final class LockPage extends ScrollView {
         if(cell.nr&&!cell.mapped&&cell.targetBand(serving)>0)nrHint.setText("已填入所选 SIM 的同频候选，请确认频段与子载波间隔。");
         // shortcut: QMI SCS 尚未验证与锁定命令的对应关系，实测锁定通过后再自动带入。
         if(cell.nr&&cell.details.containsKey("SCS"))nrHint.append(" 基带间隔 "+cell.details.get("SCS")+"；当前填写值请核对。");
+        changingFields=false;showSection();updateCellUi();smoothScrollTo(0,0);
+    }
+
+    void fillSaved(org.json.JSONObject cell) {
+        if(busy||!SavedCells.valid(cell))return;
+        sectionTabs.select(2);cellTabs.select(cell.optBoolean("nr")?0:1);changingFields=true;
+        boolean nr=cell.optBoolean("nr");int arfcn=cell.optInt("arfcn",-1),pci=cell.optInt("pci",-1),band=cell.optInt("band");
+        if(nr){nrKindTabs.select(0);nrArfcn.setText(arfcn>=0&&arfcn<=3279165?String.valueOf(arfcn):"");nrPci.setText(pci>=0&&pci<=1007?String.valueOf(pci):"");nrBand.setText(band>0?String.valueOf(band):"");selectScs(cell.optInt("scs")>0?cell.optInt("scs"):Bands.defaultScs(band));nrHint.setText("来自保存小区，请核对历史参数及 SCS（子载波间隔）后锁定。当前未观测到该小区也可尝试。");}
+        else{lteArfcn.setText(arfcn>=0&&arfcn<=65535?String.valueOf(arfcn):"");ltePci.setText(pci>=0&&pci<=503?String.valueOf(pci):"");}
         changingFields=false;showSection();updateCellUi();smoothScrollTo(0,0);
     }
 

@@ -62,7 +62,7 @@ public final class MainActivity extends Activity {
     private SharedPreferences prefs;
     private Spinner simSpinner;
     private TextView pageTitle;
-    private View configurationEntry;
+    private View savedCellsEntry,configurationEntry;
     private CellsPage cells;
     private LockPage locks;
     private DevicePage device;
@@ -100,6 +100,7 @@ public final class MainActivity extends Activity {
         LinearLayout root=ui.column();root.setBackgroundColor(Ui.BG);
         LinearLayout header=ui.column();header.setPadding(ui.dp(22),ui.dp(16),ui.dp(22),ui.dp(13));
         pageTitle=ui.text(TITLES[selectedPage],24,Ui.INK);pageTitle.setTypeface(null,Typeface.BOLD);LinearLayout titleRow=ui.row();titleRow.setMinimumHeight(ui.dp(48));titleRow.addView(pageTitle,ui.weight(-2));
+        LineIcon bookmark=new LineIcon(this,LineIcon.BOOKMARK,Ui.INK);bookmark.setPadding(ui.dp(12),ui.dp(12),ui.dp(12),ui.dp(12));bookmark.setBackground(ui.ripple(android.graphics.Color.TRANSPARENT,24));bookmark.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);bookmark.setContentDescription("已保存小区");bookmark.setOnClickListener(v->chooseSavedCells());savedCellsEntry=bookmark;titleRow.addView(bookmark,new LinearLayout.LayoutParams(ui.dp(48),ui.dp(48)));
         configurationEntry=ui.textButton("配置管理");configurationEntry.setOnClickListener(v->chooseRestore());titleRow.addView(configurationEntry,new LinearLayout.LayoutParams(-2,ui.dp(48)));header.addView(titleRow,ui.fill(-2));ui.gap(header,14);
         LinearLayout sim=ui.row();sim.setPadding(ui.dp(12),0,ui.dp(7),0);sim.setBackground(ui.shape(Ui.CARD,14,0));sim.addView(new LineIcon(this,LineIcon.SIM,Ui.GREEN),new LinearLayout.LayoutParams(ui.dp(19),ui.dp(23)));ui.gap(sim,7);
         simSpinner=ui.spinner(new String[]{"授权后选择 SIM"});simSpinner.setContentDescription("选择操作的 SIM 卡");sim.addView(simSpinner,ui.weight(46));header.addView(sim,ui.fill(-2));root.addView(header);
@@ -111,9 +112,11 @@ public final class MainActivity extends Activity {
         locks=new LockPage(this,ui,new LockPage.Host(){
             public void onRefresh(){readState(true);}
             public void onApply(String title,String summary,List<String[]> commands){confirmApply(title,summary,commands,null);}
+            public void onSavedCells(){chooseSavedCells();}
             public void onMessage(String title,String message){showMessage(title,message);}
         });
         cells=new CellsPage(this,ui,reader,new CellsPage.Host(){
+            public void onSaveCell(RadioCell cell,RadioCell serving){saveCell(cell,serving);}
             public void onTarget(RadioCell cell){if(!SESSION.running()){locks.fillTarget(cell);showPage(1);}}
             public void onNeedPermission(){requestPermissionsManually(true);}
             public void onSimChanged(){loadSubscriptions();}
@@ -135,7 +138,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showPage(int page) {
-        selectedPage=page;pageTitle.setText(TITLES[page]);configurationEntry.setVisibility(page==1?View.VISIBLE:View.GONE);
+        selectedPage=page;pageTitle.setText(TITLES[page]);savedCellsEntry.setVisibility(page==0?View.VISIBLE:View.GONE);configurationEntry.setVisibility(page==1?View.VISIBLE:View.GONE);
         for(int i=0;i<3;i++){boolean selected=i==page;pages[i].setVisibility(selected?View.VISIBLE:View.GONE);navigation[i].setBackground(ui.shape(selected?Ui.SOFT_GREEN:Ui.CARD,16,0));navLabels[i].setTextColor(selected?Ui.GREEN:Ui.MUTED);navIcons[i].setColor(selected?Ui.GREEN:Ui.MUTED);}
         View focus=getCurrentFocus();if(focus!=null){InputMethodManager keyboard=getSystemService(InputMethodManager.class);if(keyboard!=null)keyboard.hideSoftInputFromWindow(focus.getWindowToken(),0);focus.clearFocus();}
         cells.setForeground(resumed&&page==0);
@@ -213,6 +216,24 @@ public final class MainActivity extends Activity {
         return true;
     }
 
+    private void chooseSavedCells() {
+        if(SESSION.running()||!trustedSim())return;
+        try{pendingTask=new Task(subscriptionId,Backend.slotOf(this,subscriptionId),simName(subscriptionId),"已保存小区",new ArrayList<>(),null);openDialog("cells","已保存小区","");}
+        catch(Exception error){showMessage("无法读取保存小区",message(error));}
+    }
+    private void saveCell(RadioCell cell,RadioCell serving) {
+        if(SESSION.running()||!trustedSim())return;
+        try{pendingTask=new Task(subscriptionId,Backend.slotOf(this,subscriptionId),simName(subscriptionId),"保存小区",new ArrayList<>(),null);JSONObject observation=SavedCells.observation(cell,serving);
+            for(JSONObject saved:SavedCells.list(prefs,pendingTask.slot,pendingTask.subscriptionId))if(SavedCells.identity(saved).equals(SavedCells.identity(observation))){observation.put("note",saved.optString("note"));break;}
+            openDialog("cell-save","保存小区",observation.toString());}
+        catch(Exception error){showMessage("无法保存小区",message(error));}
+    }
+    private void updateCell(Task task,JSONObject cell,String note,boolean save) {
+        if(!validConfigTask(task))return;
+        boolean ok=save?SavedCells.save(prefs,task.slot,task.subscriptionId,cell,note):SavedCells.change(prefs,task.slot,task.subscriptionId,cell.optString("id"),note);
+        if(!ok){showMessage("保存小区更新未确认","原始记录已保留，请重新打开列表确认。");return;}
+        pendingTask=task;openDialog("cells","已保存小区","");
+    }
     private void restoreChoice(Task task,int choice) {
         if(!validConfigTask(task))return;
         List<String[]> commands=new ArrayList<>();
@@ -260,7 +281,7 @@ public final class MainActivity extends Activity {
     }
 
     private void refreshUi() {
-        if(!ready)return;boolean busy=SESSION.running();Ui.enable(simSpinner,!busy);Ui.enable(configurationEntry,!busy);locks.setNrCombinedOnly(SESSION.nrCombinedOnly(subscriptionId));locks.setState(SESSION.state(subscriptionId));locks.setBusy(busy);cells.setBusy(busy);
+        if(!ready)return;boolean busy=SESSION.running();Ui.enable(simSpinner,!busy);Ui.enable(configurationEntry,!busy);Ui.enable(savedCellsEntry,!busy&&trustedSim());locks.setNrCombinedOnly(SESSION.nrCombinedOnly(subscriptionId));locks.setState(SESSION.state(subscriptionId));locks.setBusy(busy);cells.setBusy(busy);
         device.update(SESSION.state(subscriptionId),SESSION.status(subscriptionId),SESSION.lastRead(subscriptionId),busy,SESSION.logs(),simStatus);
     }
 
@@ -323,8 +344,8 @@ public final class MainActivity extends Activity {
     private void openDialog(String kind,String title,String body) {
         if(isDestroyed()||isFinishing())return;
         dialogKind=kind;messageTitle=title;messageBody=body;messageVisible=true;dialogScroll=0;expandedDetails.clear();
-        snapshotNoteDraft="";if(kind.equals("snapshot-note"))try{snapshotNoteDraft=new JSONObject(body).optString("note");}catch(Exception ignored){}
-        if(!kind.equals("restore")&&!kind.equals("confirm")&&!kind.startsWith("snapshot"))pendingTask=null;
+        snapshotNoteDraft="";if(kind.equals("snapshot-note")||kind.equals("cell-note")||kind.equals("cell-save"))try{snapshotNoteDraft=new JSONObject(body).optString("note");}catch(Exception ignored){}
+        if(!kind.equals("restore")&&!kind.equals("confirm")&&!kind.startsWith("snapshot")&&!kind.startsWith("cell"))pendingTask=null;
         if(resumed)renderDialog();
     }
     private void renderDialog() {
@@ -339,6 +360,23 @@ public final class MainActivity extends Activity {
                 ui.choice(body,"保存配置","重新读取当前设置，新增快照并可填写备注，不改变基带设置。",()->restoreChoice(task,0));ui.gap(body,12);
                 ui.choice(body,"读取配置","选择此 SIM 的快照，可读取、编辑备注或删除。",()->restoreChoice(task,1));ui.gap(body,12);
                 body.addView(ui.caption("配置按 SIM 分别保存。首次完整读取会自动备份。每份快照都会列出可恢复的设置、恢复时会跳过的未知项，以及仅供参考的信息。"));action="关闭";break;
+            case "cells":
+                subtitle=task==null?"":task.target;
+                if(task!=null)try{List<JSONObject> records=SavedCells.list(prefs,task.slot,task.subscriptionId);
+                    if(records.isEmpty())body.addView(ui.caption("长按当前服务小区卡片或周边小区条目，填写备注后保存。"));
+                    for(JSONObject record:records){LinearLayout row=ui.choice(body,record.optString("note").trim().isEmpty()?"保存小区":record.optString("note").trim(),SavedCells.describe(record),recordTime(record),()->openDialog("cell","保存小区详情",record.toString()));row.setPadding(ui.dp(14),ui.dp(12),ui.dp(14),ui.dp(12));row.setBackground(ui.ripple(Ui.BG,14));row.setOnLongClickListener(v->{openDialog("cell-note","编辑备注",record.toString());return true;});ui.gap(body,8);}
+                }catch(Exception error){body.addView(ui.caption(message(error)));}action="关闭";break;
+            case "cell":case "cell-save":case "cell-note":case "cell-delete":{
+                subtitle=task==null?"":task.target;
+                try{JSONObject record=new JSONObject(messageBody);recordHeading(body,record);body.addView(ui.caption(SavedCells.describe(record)));if(record.optBoolean("nr")&&record.optInt("scs")>0){ui.gap(body,6);body.addView(ui.caption("SCS "+record.optInt("scs")+" kHz"));}ui.gap(body,12);body.addView(ui.caption(cells.currentlyObserved(record)?"当前观测中发现参数匹配的小区，可供锁定前参考。":"当前未观测到该小区，你仍可填入参数尝试锁定。历史记录不能保证该小区当前可用。"));ui.gap(body,16);
+                    if(dialogKind.equals("cell")){
+                        ui.choice(body,"用作锁定目标","填入现有表单，由你核对后手动锁定；历史记录不保证仍在覆盖范围。",()->{if(validConfigTask(task)){locks.fillSaved(record);showPage(1);messageDialog.dismiss();}});ui.gap(body,12);
+                        ui.choice(body,"编辑备注","仅修改本地备注。",()->openDialog("cell-note","编辑备注",record.toString()));ui.gap(body,12);
+                        android.widget.Button delete=ui.dangerButton("删除小区");delete.setOnClickListener(v->openDialog("cell-delete","删除小区",record.toString()));body.addView(delete,ui.fill(48));action="关闭";
+                    }else if(dialogKind.equals("cell-delete")){body.addView(ui.caption("确认删除这条保存小区？不改变当前锁定。"));action="确认删除";cancel="返回";apply=()->updateCell(task,record,null,false);}
+                    else{EditText input=snapshotNote(body);boolean saving=dialogKind.equals("cell-save");action=saving?"保存小区":"保存备注";cancel="返回";apply=()->updateCell(task,record,input.getText().toString(),saving);}
+                }catch(Exception error){body.addView(ui.caption("保存小区无法读取，请重新打开列表。"));}break;
+            }
             case "snapshots":
                 subtitle=task==null?"请核对所选 SIM":task.target;
                 if(task!=null)try{

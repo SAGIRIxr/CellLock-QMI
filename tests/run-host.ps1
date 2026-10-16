@@ -9,8 +9,8 @@ foreach($file in @($AndroidJar,$JsonJar)){if(-not(Test-Path -LiteralPath $file))
 $output = Join-Path $PSScriptRoot 'host-classes'
 New-Item -ItemType Directory -Force -Path $output | Out-Null
 $source = Join-Path $PSScriptRoot '../app/src/main/java/com/celllock/app'
-$inputs = @('Bands','Models','InputValidator','SignalHistory','SimStatus','Snapshots','SavedRecords','BandDefaults','SimInfo','RadioCell','MeasurementDecoder','DiagnosticCells','RadioReader','RootShell','RootPhone') | ForEach-Object { Join-Path $source "$_.java" }
-$tests = @('InputValidatorTest','SignalHistoryTest','SimStatusTest','SnapshotsTest','MeasurementDecoderTest','RadioCellTest','ReadingPolicyTest','NasVerificationTest')
+$inputs = @('Bands','Models','InputValidator','SignalHistory','SimStatus','Snapshots','SavedRecords','SavedCells','BandDefaults','SimInfo','RadioCell','MeasurementDecoder','DiagnosticCells','RadioReader','RootShell','RootPhone') | ForEach-Object { Join-Path $source "$_.java" }
+$tests = @('InputValidatorTest','SignalHistoryTest','SimStatusTest','SnapshotsTest','SavedCellsTest','MeasurementDecoderTest','RadioCellTest','ReadingPolicyTest','NasVerificationTest')
 $inputs += $tests | ForEach-Object { Join-Path $PSScriptRoot "$_.java" }
 $inputs += Join-Path $PSScriptRoot 'host/android/os/SystemClock.java'
 & (Join-Path $Jdk 'bin/javac.exe') -encoding UTF-8 -cp "$JsonJar;$AndroidJar" -d $output @inputs

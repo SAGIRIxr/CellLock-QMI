@@ -141,7 +141,7 @@ final class RadioCell {
                 source, mapped, receivedAt, values);
     }
 
-    private boolean recentMeasurement() { return recent() && (timestamp == 0 || fresh()); }
+    boolean recentMeasurement() { return recent() && (timestamp == 0 || fresh()); }
 
     boolean recent() {
         long now = android.os.SystemClock.elapsedRealtime();
