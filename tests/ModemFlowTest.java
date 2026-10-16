@@ -28,6 +28,7 @@ public final class ModemFlowTest extends Instrumentation {
     private int checks,slot,sub;
     private Object session;
     private JSONObject baseline;
+    private Bundle acceptanceArgs;
     private void check(boolean value,String message){checks++;if(!value)throw new AssertionError(message);}
     private void main(Runnable action){Throwable[] error={null};runOnMainSync(()->{try{action.run();}catch(Throwable e){error[0]=e;}});if(error[0]!=null)throw new AssertionError(error[0]);waitForIdleSync();}
     private Object call(Object target,String name,Class<?>[] types,Object... args)throws Exception{Method method=target.getClass().getDeclaredMethod(name,types);method.setAccessible(true);return method.invoke(target,args);}
@@ -84,8 +85,88 @@ public final class ModemFlowTest extends Instrumentation {
             if(interrupted)Thread.currentThread().interrupt();
         }
     }
-    @Override public void onCreate(Bundle args){super.onCreate(args);start();}
+    private void evidence(String name,String text)throws Exception{
+        try(FileOutputStream out=new FileOutputStream(new File(getTargetContext().getExternalFilesDir(null),"acceptance-"+name))){out.write(text.getBytes(java.nio.charset.StandardCharsets.UTF_8));}
+    }
+    private void selectChoice(String label){
+        main(()->{TextView title=texts(dialog().getWindow().getDecorView()).stream().filter(t->t.getText().toString().split("\n",2)[0].equals(label)).findFirst().orElseThrow();((View)title.getParent().getParent()).performClick();});
+    }
+    private void recreate()throws Exception{
+        ActivityMonitor monitor=addMonitor(MainActivity.class.getName(),null,false);
+        main(activity::recreate);Activity next=waitForMonitorWithTimeout(monitor,7000);removeMonitor(monitor);
+        check(next!=null,"activity recreation timeout");activity=next;waitForIdleSync();
+    }
+    private void clearingAcceptance(){
+        Bundle output=new Bundle();Throwable failure=null;
+        String route=acceptanceArgs.getString("route","clear-quick"),phase=acceptanceArgs.getString("phase","clear");
+        try{
+            activity=startActivitySync(new Intent(getTargetContext(),MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));session=field(activity,"SESSION");
+            if(phase.equals("pending")){
+                check((boolean)call(session,"recoveryUnverified",new Class<?>[0]),"process rebuild lost pending marker");
+                check(field(session,"states") instanceof java.util.Map&&((java.util.Map<?,?>)field(session,"states")).isEmpty(),"process rebuild retained modem state");
+                String history=(String)call(session,"rawHistory",new Class<?>[0]);
+                page(0);SystemClock.sleep(6500);page(2);SystemClock.sleep(1500);recreate();
+                check(history.equals(call(session,"rawHistory",new Class<?>[0])),"process rebuild/pages silently read modem");
+                check((boolean)field(field(activity,"cells"),"awaitingRefresh"),"recreated cells may auto refresh after SSR");
+                evidence("pending.json",new JSONObject().put("checks",checks).put("automaticModemReads",0).toString());
+            }else{
+                if(phase.equals("manual"))main(()->invoke(activity,"readState",new Class<?>[]{boolean.class},true));
+                boolean trusted=false;for(int i=0;i<160;i++){trusted=(boolean)call(activity,"trustedSim",new Class<?>[0]);if(trusted)break;SystemClock.sleep(100);}check(trusted,"no trusted SIM");
+                int requested=Integer.parseInt(acceptanceArgs.getString("slot","0"));
+                List<SimInfo> sims=field(activity,"subscriptions");SimInfo selected=sims.stream().filter(s->s.slot==requested&&s.trusted()).findFirst().orElseThrow();
+                main(()->invoke(activity,"selectSim",new Class<?>[]{SimInfo.class},selected));sub=selected.subscriptionId;slot=selected.slot;
+                page(2);waitComplete();
+                if(phase.equals("manual")){main(()->invoke(activity,"readState",new Class<?>[]{boolean.class},true));waitComplete();check(!(boolean)call(session,"recoveryUnverified",new Class<?>[0]),"explicit refresh did not lift pending marker");}
+                check(state()!=null&&state().prefKnown&&state().hwKnown,"configuration read missing");
+                DevicePage hardware=field(activity,"device");TextView nr=field(hardware,"nrBands"),lte=field(hardware,"lteBands");
+                if(phase.equals("clear")){
+                    if(route.equals("clear-complete")){
+                        for(SimInfo other:sims)if(other.trusted()&&other.slot!=slot){main(()->invoke(activity,"selectSim",new Class<?>[]{SimInfo.class},other));page(2);waitComplete();}
+                        main(()->invoke(activity,"selectSim",new Class<?>[]{SimInfo.class},selected));page(2);waitComplete();
+                        check(((java.util.Map<?,?>)field(session,"states")).size()==sims.stream().filter(SimInfo::trusted).count(),"both SIM caches were not populated before invalidation test");
+                    }
+                    int oldRat=state().rat,oldMode=state().nrMode;
+                    page(1);View config=field(activity,"configurationEntry");
+                    check(config.getHeight()>=new Ui(activity).dp(48),"configuration target too small");
+                    main(config::performClick);selectChoice("清除全部锁定");selectChoice(route.equals("clear-complete")?"完整清除（重启基带）":"快速清除（不重启基带）");
+                    check(buttonText("直接清除")!=null,"actual clear confirmation missing");
+                    long started=SystemClock.elapsedRealtime();button(acceptanceArgs.getString("backup","false").equals("true")?"备份并清除":"直接清除");waitComplete();
+                    long completed=SystemClock.elapsedRealtime();OperationReport result=report();
+                    evidence("boundary-"+slot+".json",new JSONObject().put("route",route).put("slot",slot).put("startedElapsed",started).put("completedElapsed",completed).put("durationMs",completed-started).put("report",new JSONObject(result.encode())).put("history",call(session,"rawHistory",new Class<?>[0])).toString());
+                    if(route.equals("clear-complete")){
+                        check(result.recoveryUnverified,"complete clear lost unverified recovery result");
+                        check(result.items.stream().anyMatch(i->i.name.equals("基带重载请求")&&i.status.equals("accepted")),"SSR not accepted: "+result.summary());
+                        check(result.items.stream().anyMatch(i->i.name.equals("固定持久项核对")&&i.confirmed()),"fixed cleanup gate not confirmed");
+                        check(((java.util.Map<?,?>)field(session,"states")).isEmpty(),"both SIM configuration caches not invalidated");
+                        check(((java.util.Map<?,?>)field(session,"readTimes")).isEmpty(),"old hardware/read timestamps retained");
+                        check((boolean)call(session,"recoveryUnverified",new Class<?>[0]),"Session lost recovery marker");
+                        check((boolean)field(field(activity,"cells"),"awaitingRefresh"),"measurement cache not invalidated");
+                        java.lang.reflect.Field safe=RootShell.class.getDeclaredField("diagnosticSafe");safe.setAccessible(true);check(safe.getBoolean(null),"diagnostic exit unsafe");
+                        String history=(String)call(session,"rawHistory",new Class<?>[0]);
+                        capture("complete-result-"+slot);button("知道了");page(0);SystemClock.sleep(6500);page(2);recreate();SystemClock.sleep(1500);
+                        check(history.equals(call(session,"rawHistory",new Class<?>[0])),"lifecycle appended automatic modem read after SSR");
+                        check(((java.util.Map<?,?>)field(session,"states")).isEmpty(),"lifecycle refilled invalid modem state");
+                        check((boolean)field(field(activity,"cells"),"awaitingRefresh"),"rotation resumed measurements");
+                    }else{
+                        ModemState after=state();check(after.rat==oldRat&&after.nrMode==oldMode,"quick clear changed RAT/group");
+                        check(includes(after.lte,after.hwLte)&&includes(after.nrSa,after.hwNr)&&includes(after.nrNsa,after.hwNr),"quick clear missed supported bands");
+                        check(after.lteKnown&&after.lteCells.length==0,"LTE cell clear not confirmed");
+                        check(!result.recoveryUnverified&&!result.details.contains("EFS "),"quick clear used persistent/reload route");
+                        check(result.items.stream().anyMatch(i->i.name.equals("清除 5G 小区/频点锁")),"band no-op skipped NR clear");
+                        capture("quick-result-"+slot);
+                    }
+                    evidence("verified-"+slot+".json",new JSONObject().put("route",route).put("checks",checks).put("report",new JSONObject(result.encode())).put("history",call(session,"rawHistory",new Class<?>[0])).toString());
+                }
+            }
+        }catch(Throwable error){failure=error;}
+        finally{if(activity!=null)try{main(()->{if(dialog()!=null)dialog().dismiss();activity.finish();});}catch(Throwable error){if(failure==null)failure=error;else failure.addSuppressed(error);}}
+        output.putString("stream",failure==null?"PASS: "+checks+" production clear/lifecycle checks; independent recovery remains separate\n":android.util.Log.getStackTraceString(failure));
+        finish(failure==null?Activity.RESULT_OK:Activity.RESULT_CANCELED,output);
+    }
+    private Button buttonText(String label){return (Button)texts(dialog().getWindow().getDecorView()).stream().filter(t->t instanceof Button&&t.getText().toString().equals(label)).findFirst().orElseThrow();}
+    @Override public void onCreate(Bundle args){super.onCreate(args);if(args!=null&&args.containsKey("phase"))acceptanceArgs=args;start();}
     @Override public void onStart(){
+        if(acceptanceArgs!=null){clearingAcceptance();return;}
         Bundle output=new Bundle();Throwable failure=null;
         try{
             activity=startActivitySync(new Intent(getTargetContext(),MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));session=field(activity,"SESSION");

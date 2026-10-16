@@ -300,6 +300,11 @@ final class ModemResult {
         return result;
     }
 
+    boolean acceptedUnknown() {
+        try{JSONObject json=new JSONObject(raw);return !ok&&stage.equals("unknown")&&json.optInt("writes",0)>0&&json.optInt("accepted",0)==json.optInt("writes",0)&&json.optInt("result",-1)==0&&json.optInt("error",-1)==0;}
+        catch(Exception ignored){return false;}
+    }
+
     static String stepName(String name) {
         switch (name) {
             case "legacy": return "2G / 3G 频段";
@@ -328,6 +333,8 @@ final class ResultItem {
             case "unverified": case "mismatch": return "回读与目标不一致";
             case "unknown": case "transport": case "interrupted": return "状态未确认";
             case "skipped": return "未知，已跳过";
+            case "accepted": return "请求已接受";
+            case "not_applicable": return "不适用";
             case "recorded": return "仅记录，不支持自动恢复";
             default: return "未完成";
         }
@@ -341,15 +348,20 @@ final class OperationReport {
     final List<ResultItem> items = new ArrayList<>();
     String details = "";
     String restoreStatus = "";
+    boolean recoveryUnverified;
     OperationReport(String title, String target) { this.title=title; this.target=target; }
     void add(String name, ModemResult result) {
         if (result.items.isEmpty()) {
             String status=result.ok ? (result.stage.equals("state") ? "read" : result.mutated ? "verified" : "unchanged") : result.stage;
-            items.add(new ResultItem(name,status,result.message));
+            items.add(new ResultItem(name,status,result.acceptedUnknown()?"请求已接受；独立回读未确认效果，不重复发送。":result.message));
         } else items.addAll(result.items);
-        details += (details.isEmpty()?"":"\n\n") + name + "\n" + (result.raw.isEmpty()?result.stage+"："+result.message:result.raw);
+        detail(name,result.raw.isEmpty()?result.stage+"："+result.message:result.raw);
+    }
+    void detail(String name,String raw) {
+        details+=(details.isEmpty()?"":"\n\n")+name+"\n"+raw;
         if(details.length()>24000)details="较早回执已省略，可导出诊断查看近期完整回执。\n"+details.substring(details.length()-24000);
     }
+
     boolean ok() { return !items.isEmpty() && items.stream().allMatch(ResultItem::confirmed); }
     String outcome() {
         if (ok()) return items.stream().allMatch(i->i.status.equals("read"))?"已读取":items.stream().allMatch(i->i.status.equals("saved"))?"已保存":"已确认";
@@ -358,6 +370,7 @@ final class OperationReport {
         return items.stream().anyMatch(i->i.status.equals("unknown")||i.status.equals("transport")||i.status.equals("interrupted")) ? "结果未确认" : "未完成";
     }
     String dialogTitle() {
+        if(recoveryUnverified)return title+" · 恢复状态未核验";
         if(restoreStatus.equals("matched"))return ok()?"已应用保存的配置":"配置已应用 · 仍有未完成项";
         if(restoreStatus.equals("mismatch"))return "尚未完整应用保存的配置";
         return title+" · "+outcome();
@@ -368,11 +381,11 @@ final class OperationReport {
         return text.toString();
     }
     String encode() {
-        try { JSONArray rows=new JSONArray();for(ResultItem item:items)rows.put(item.json());return new JSONObject().put("title",title).put("target",target).put("items",rows).put("details",details).put("restoreStatus",restoreStatus).toString(); }
+        try { JSONArray rows=new JSONArray();for(ResultItem item:items)rows.put(item.json());return new JSONObject().put("title",title).put("target",target).put("items",rows).put("details",details).put("restoreStatus",restoreStatus).put("recoveryUnverified",recoveryUnverified).toString(); }
         catch(org.json.JSONException error) { throw new IllegalStateException(error); }
     }
     static OperationReport decode(String raw) {
-        try { JSONObject json=new JSONObject(raw);OperationReport report=new OperationReport(json.optString("title"),json.optString("target"));report.details=json.optString("details");report.restoreStatus=json.optString("restoreStatus");JSONArray rows=json.optJSONArray("items");if(rows!=null)for(int i=0;i<rows.length();i++){JSONObject row=rows.optJSONObject(i);if(row!=null)report.items.add(new ResultItem(row.optString("name"),row.optString("status","unknown"),row.optString("detail")));}return report; }
+        try { JSONObject json=new JSONObject(raw);OperationReport report=new OperationReport(json.optString("title"),json.optString("target"));report.details=json.optString("details");report.restoreStatus=json.optString("restoreStatus");report.recoveryUnverified=json.optBoolean("recoveryUnverified");JSONArray rows=json.optJSONArray("items");if(rows!=null)for(int i=0;i<rows.length();i++){JSONObject row=rows.optJSONObject(i);if(row!=null)report.items.add(new ResultItem(row.optString("name"),row.optString("status","unknown"),row.optString("detail")));}return report; }
         catch(org.json.JSONException error) { return null; }
     }
 }

@@ -28,6 +28,7 @@ final class CellsPage extends ScrollView {
         void onNeedPermission();
         void onServingChanged(RadioCell cell);
         void onSimChanged();
+        default void onManualRefresh() {}
         default void onSaveCell(RadioCell cell, RadioCell serving) {}
     }
 
@@ -49,6 +50,7 @@ final class CellsPage extends ScrollView {
     };
     private Runnable timeout;
     private int subscriptionId = SubscriptionManager.INVALID_SUBSCRIPTION_ID, generation, neighborTotal;
+    private boolean awaitingRefresh;
     private boolean foreground, busy, disposed, reading, scheduled, cached, otherExpanded;
     private RadioCell serving;
     private TextView autoStatus, rat, servingCaption, signal, quality, reference;
@@ -246,14 +248,19 @@ final class CellsPage extends ScrollView {
         if (changed && !busy) requestSoon();
     }
 
+    void invalidateAfterReload() {
+        if(awaitingRefresh)return;
+        awaitingRefresh=true;stopSchedule();cancelRead();reader.invalidateMeasurements();history.clear();showEmpty("重载任务状态未核验，请手动刷新");updatePolicy();
+    }
     void refresh() {
+        awaitingRefresh=false;host.onManualRefresh();
         reader.retry();
         if (sim == null || sim.subscriptionId < 0) host.onSimChanged();
         readCells(false);
     }
 
     private boolean canRefresh() {
-        return !disposed && foreground && !busy && !activity.isDestroyed();
+        return !disposed && !awaitingRefresh && foreground && !busy && !activity.isDestroyed();
     }
 
     private void stopSchedule() {
@@ -276,7 +283,7 @@ final class CellsPage extends ScrollView {
         if (!canRefresh()) {
             stopSchedule();
             if (reading) cancelRead();
-            autoStatus.setText(busy ? "操作中 · 暂停" : "当前页已暂停");
+            autoStatus.setText(busy ? "操作中 · 暂停" : awaitingRefresh?"待手动刷新":"当前页已暂停");
         } else {
             autoStatus.setText(reading ? "正在更新" : "自动 · 5 秒");
             schedule(INTERVAL_MS);

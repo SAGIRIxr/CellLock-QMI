@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* Fixed band EFS allowlist. Only slot 0 deletion has been calibrated on a device. */
+/* Fixed cleanup operations and one explicit modem restart; no arbitrary DIAG input. */
 #define _POSIX_C_SOURCE 200809L
 #include <dlfcn.h>
 #include <errno.h>
@@ -64,7 +64,7 @@ int main(int argc, char **argv) {
     int success = 0, code = 0, saved_errno = 0, client_id = -1, initialized = 0;
     int register_code = -1, send_code = -1, release_code = -1, deinit_code = -1;
     uint16_t support_mask = 0;
-    const char *stage = "arguments", *message = "Only eight fixed band UNLINK paths or EFS sync/status are accepted";
+    const char *stage = "arguments", *message = "Only fixed EFS operations or reload-once are accepted";
     char detail[1024] = {0};
     void *library = NULL;
     init_fn init = NULL;
@@ -111,7 +111,7 @@ int main(int argc, char **argv) {
     register_code = reg(&client_id, &peripheral_list, 1, &signal_type);
     if (register_code != DCI_OK) { message = "DCI registration failed"; code = register_code; saved_errno = errno; goto done; }
     stage = "send_fixed_efs";
-    /* No arbitrary command, path, item content, crash or restart is exposed. */
+    /* Only the validated fixed command selected above can reach libdiag. */
     send_code = send(client_id, command, (int)command_length, vendor_response, sizeof(vendor_response), response_cb, NULL);
     if (send_code != DCI_OK) { message = "Fixed EFS request failed"; code = send_code; saved_errno = errno; goto done; }
     stage = "wait_fixed_efs";

@@ -29,6 +29,10 @@ final class LockPlan {
         if(steps.size()==2&&steps.get(0)[2].equals(steps.get(1)[2])){String value=steps.get(0)[2];steps.clear();steps.add(new String[]{"restore-nr","both",value});}
         return steps;
     }
+    static List<String[]> quickClear(ModemState state) {
+        List<String[]> commands=openSupported(state);
+        commands.add(new String[]{"cell-clear","lte"});commands.add(new String[]{"cell-clear","nr"});return commands;
+    }
     static List<String[]> openSupported(ModemState state) {
         if(state==null||!state.hwKnown||state.hwLte==null||state.hwNr==null||state.hwGsm==null||state.hwWcdma==null)throw new IllegalStateException("硬件支持频段未读完整，未执行开放");
         List<String[]> commands=new ArrayList<>();

@@ -45,6 +45,7 @@ final class RadioReader {
     private volatile int processor = -1, diagnosticMisses;
     private volatile long nextDiagProbe;
     private volatile boolean diagUnsupported;
+    void invalidateMeasurements(){cancel();worker.execute(diagnosticCells::clear);}
     private final DiagnosticCells diagnosticCells = new DiagnosticCells();
 
     RadioReader(Context context) { this.context = context.getApplicationContext(); }
@@ -115,12 +116,12 @@ final class RadioReader {
         return RootShell.runDiagnostic(executable, args, timeout);
     }
 
-    void loadSims(Consumer<List<SimInfo>> callback) {
+    void loadSims(boolean allowRoot,Consumer<List<SimInfo>> callback) {
         int token = ++metadataGeneration;
         worker.execute(() -> {
             if (closed || token != metadataGeneration) return;
             List<SimInfo> sims = normalSims(context);
-            boolean root = RootShell.probe();
+            boolean root = allowRoot && RootShell.probe();
             if (sims.isEmpty() && root) try { sims = rootSims(phone(context, "sims", -1)); } catch (Exception ignored) { }
             if (sims.isEmpty() && root && RootShell.available()) try { sims = MeasurementDecoder.uim(nativeRead("libcelllock_read.so", "sims", 10)); } catch (Exception ignored) { }
             if (sims.isEmpty()) {

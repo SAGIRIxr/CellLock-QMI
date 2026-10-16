@@ -86,12 +86,14 @@ public final class MainActivity extends Activity {
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         ui=new Ui(this);prefs=getSharedPreferences("celllock",MODE_PRIVATE);reader=new RadioReader(this);
+        if(prefs.getBoolean("reloadPending",false))SESSION.invalidateAfterReload();
         if(saved!=null){subscriptionId=saved.getInt("main.sim",SubscriptionManager.INVALID_SUBSCRIPTION_ID);selectedSlot=saved.getInt("main.slot",-1);selectedPage=Math.max(0,Math.min(2,saved.getInt("main.page")));exportText=saved.getString("main.export","");consumed=SESSION.alive()?Math.max(saved.getLong("main.consumed",-1),SESSION.deliveredId()):-1;SESSION.restoreLogs(saved.getStringArrayList("main.logs"));}
         else consumed=SESSION.deliveredId();
         if(saved!=null)restoreDialog(saved);
         buildUi();ready=true;
         if(saved!=null){cells.restore(saved);locks.restore(saved);device.post(()->device.scrollTo(0,saved.getInt("main.deviceScroll")));}
         if(saved!=null&&saved.getBoolean("main.wasBusy")&&!SESSION.alive())SESSION.log("应用进程已重建，上次操作结果未知，请重新读取确认。");
+        if(saved!=null&&saved.getBoolean("main.recoveryUnverified"))SESSION.invalidateAfterReload();
         SESSION.attach(this);loadSubscriptions();refreshUi();showPage(selectedPage);
         if(saved==null)SESSION.log("CellLock "+version()+" 已就绪。");
     }
@@ -117,6 +119,7 @@ public final class MainActivity extends Activity {
         });
         cells=new CellsPage(this,ui,reader,new CellsPage.Host(){
             public void onSaveCell(RadioCell cell,RadioCell serving){saveCell(cell,serving);}
+            public void onManualRefresh(){allowManualRead();loadSubscriptions();}
             public void onTarget(RadioCell cell){if(!SESSION.running()){locks.fillTarget(cell);showPage(1);}}
             public void onNeedPermission(){requestPermissionsManually(true);}
             public void onSimChanged(){loadSubscriptions();}
@@ -148,7 +151,7 @@ public final class MainActivity extends Activity {
     private boolean phonePermission(){return checkSelfPermission(Manifest.permission.READ_PHONE_STATE)==PackageManager.PERMISSION_GRANTED;}
     private void loadSubscriptions() {
         if(!ready||SESSION.running())return;
-        reader.loadSims(active->{
+        reader.loadSims(!SESSION.recoveryUnverified(),active->{
             if(isDestroyed())return;
             int previous=subscriptionId,previousSlot=selectedSlot;subscriptions.clear();subscriptions.addAll(active);
             boolean trusted=active.stream().anyMatch(SimInfo::trusted);
@@ -182,10 +185,12 @@ public final class MainActivity extends Activity {
 
     private boolean trustedSim(){return subscriptions.stream().anyMatch(s->s.subscriptionId==subscriptionId&&s.slot==selectedSlot&&s.trusted());}
     private String simName(int sub) {for(SimInfo info:subscriptions)if(info.subscriptionId==sub&&info.slot==selectedSlot)return info.label;return "订阅 "+sub;}
-    private void maybeReadInitialState(){if(ready&&resumed&&(selectedPage==1||selectedPage==2)&&!SESSION.running()&&trustedSim()&&!SESSION.attempted(subscriptionId))readState(false);}
+    private void maybeReadInitialState(){if(ready&&resumed&&(selectedPage==1||selectedPage==2)&&!SESSION.running()&&trustedSim()&&!SESSION.recoveryUnverified()&&!SESSION.attempted(subscriptionId))readState(false);}
 
+    private void allowManualRead(){prefs.edit().remove("reloadPending").apply();SESSION.allowManualRead();}
     private void readState(boolean manual) {
         if(SESSION.running())return;
+        if(manual)allowManualRead();
         if(!trustedSim()){if(manual)requestPermissionsManually(false);return;}
         if(!SubscriptionManager.isValidSubscriptionId(subscriptionId)){if(manual)toast("请先选择可用 SIM");return;}
         try{int slot=Backend.slotOf(this,subscriptionId);Task task=new Task(subscriptionId,slot,simName(subscriptionId),"读取设置",new ArrayList<>(),null);if(SESSION.start(getApplicationContext(),task))refreshUi();}
@@ -240,6 +245,10 @@ public final class MainActivity extends Activity {
         List<String[]> commands=new ArrayList<>();
         if(choice==0){commands.add(new String[]{"save-config"});confirmApply("保存配置","重新读取当前 SIM 的设置，保存为一份配置快照。能读到的配置可恢复，读不到的项目会标记为未知，恢复时跳过。底层文件（EFS）的检查结果仅供参考，不会自动恢复。此操作不改变网络设置。",commands,null);return;}
         if(choice==1){openDialog("snapshots","快照列表","");return;}
+        if(choice==2){openDialog("clear-choice","清除全部锁定","");return;}
+        if(choice==4||choice==5){boolean complete=choice==5;commands.add(new String[]{complete?"clear-complete":"clear-quick"});confirmApply(complete?"完整清除":"快速清除",complete?
+            "重载前解除所选 SIM 的 5G 组网限制，清理已覆盖的频段、小区/频点和制式持久限制并同步，随后重启基带一次。\n两张卡可能短时断网。安全发送退出后即结束，不等待恢复；恢复状态未核验。重载后允许基带或系统重新下发网络制式和组网，不自动补写。\n仅处理固定覆盖项，不保证未知厂商锁项已清除；快照不能完整还原被删除的持久项。":
+            "开放硬件支持频段，再清除 LTE/5G 运行时小区及频点锁；保留网络制式和 5G 组网。\n不主动重启基带，不删除持久锁文件；持久限制可能仍存在。",commands,null);return;}
         commands.add(new String[]{"open-bands"});confirmApply("开放全部支持频段","将设备支持的所有频段设为可用；已经全部可用的部分保持原样。\n保留小区/频点锁、网络制式和 5G 组网。开放支持频段与清除全部锁定的作用不同，也不会恢复完整默认频段范围。",commands,null);
     }
 
@@ -282,12 +291,13 @@ public final class MainActivity extends Activity {
     }
 
     private void refreshUi() {
-        if(!ready)return;boolean busy=SESSION.running();Ui.enable(simSpinner,!busy);Ui.enable(configurationEntry,!busy);Ui.enable(savedCellsEntry,!busy&&trustedSim());locks.setNrCombinedOnly(SESSION.nrCombinedOnly(subscriptionId));locks.setState(SESSION.state(subscriptionId));locks.setBusy(busy);cells.setBusy(busy);
+        if(!ready)return;if(SESSION.recoveryUnverified())cells.invalidateAfterReload();boolean busy=SESSION.running();Ui.enable(simSpinner,!busy);Ui.enable(configurationEntry,!busy);Ui.enable(savedCellsEntry,!busy&&trustedSim());locks.setNrCombinedOnly(SESSION.nrCombinedOnly(subscriptionId));locks.setState(SESSION.state(subscriptionId));locks.setBusy(busy);cells.setBusy(busy);
         device.update(SESSION.state(subscriptionId),SESSION.status(subscriptionId),SESSION.lastRead(subscriptionId),busy,SESSION.logs(),simStatus);
     }
 
     private void receive(Completion completion) {
         if(!ready||isDestroyed())return;
+        if(completion!=null&&completion.id>consumed&&completion.report.recoveryUnverified)cells.invalidateAfterReload();
         refreshUi();
         if(!resumed||completion==null||completion.id<=consumed)return;
         consumed=completion.id;SESSION.markDelivered(consumed);
@@ -323,7 +333,7 @@ public final class MainActivity extends Activity {
     @Override protected void onSaveInstanceState(Bundle out) {
         super.onSaveInstanceState(out);out.putInt("main.sim",subscriptionId);out.putInt("main.slot",selectedSlot);out.putInt("main.page",selectedPage);out.putString("main.export",exportText);out.putLong("main.consumed",consumed);out.putBoolean("main.wasBusy",SESSION.running());out.putStringArrayList("main.logs",SESSION.savedLogs());out.putInt("main.deviceScroll",device.getScrollY());cells.save(out);locks.save(out);
         out.putAll(dialogState());
-        
+        out.putBoolean("main.recoveryUnverified",SESSION.recoveryUnverified());
     }
     private Bundle dialogState(){
         Bundle out=new Bundle();out.putBoolean("main.messageVisible",messageVisible);out.putString("main.messageTitle",messageTitle);out.putString("main.messageBody",messageBody);
@@ -361,8 +371,13 @@ public final class MainActivity extends Activity {
                 subtitle=task==null?"请核对所选 SIM":task.target;
                 ui.choice(body,"保存配置","重新读取当前设置，新增快照并可填写备注，不改变基带设置。",()->restoreChoice(task,0));ui.gap(body,12);
                 ui.choice(body,"读取配置","选择此 SIM 的快照，可读取、编辑备注或删除。",()->restoreChoice(task,1));ui.gap(body,12);
+                ui.choice(body,"清除全部锁定","选择快速清除或重启基带的完整清除，不依赖默认范围登记。",()->restoreChoice(task,2));ui.gap(body,12);
                 ui.choice(body,"开放全部支持频段","允许设备支持的全部频段；保留小区/频点锁、网络制式和 5G 组网。",()->restoreChoice(task,3));ui.gap(body,14);
                 body.addView(ui.caption("配置按 SIM 分别保存。首次完整读取会自动备份。每份快照都会列出可恢复的设置、恢复时会跳过的未知项，以及仅供参考的信息。"));action="关闭";break;
+            case "clear-choice":
+                subtitle=task==null?"":task.target;
+                ui.choice(body,"快速清除（不重启基带）","开放硬件支持频段并清运行时小区锁；保留制式和组网，持久锁可能仍存在。",()->restoreChoice(task,4));ui.gap(body,12);
+                ui.choice(body,"完整清除（重启基带）","解除组网、清理固定持久项和制式限制；两卡短时断网，不等待恢复，恢复状态未核验。",()->restoreChoice(task,5));action="返回";break;
             case "cells":
                 subtitle=task==null?"":task.target;
                 if(task!=null)try{List<JSONObject> records=SavedCells.list(prefs,task.slot,task.subscriptionId);
@@ -500,7 +515,10 @@ public final class MainActivity extends Activity {
         private final Set<Integer> nrCombined=new HashSet<>();
         private WeakReference<MainActivity> owner=new WeakReference<>(null);
         private ExecutorService worker;
-        private boolean running;
+        private boolean running,recoveryUnverified;
+        synchronized boolean recoveryUnverified(){return recoveryUnverified;}
+        synchronized void allowManualRead(){recoveryUnverified=false;}
+        synchronized void invalidateAfterReload(){recoveryUnverified=true;states.clear();nrCombined.clear();readTimes.clear();for(Integer sub:attempted)statuses.put(sub,"基带状态未核验 · 请手动刷新");}
         private long sequence,delivered=-1;
         private Completion latest;
         synchronized boolean running(){return running;}
@@ -525,7 +543,7 @@ public final class MainActivity extends Activity {
         void deliver(){main.post(()->{MainActivity activity;Completion completion;synchronized(this){activity=owner.get();completion=latest;}if(activity!=null&&!activity.isDestroyed())activity.receive(completion);});}
         synchronized boolean start(Context context,Task task) {
             if(task.commands.stream().anyMatch(command->command[0].equals("reset")||command[0].equals("reset-combined")||command[0].equals("clear-all")||command[0].equals("register-default")))throw new IllegalStateException("旧版任务已失效，请重新选择操作并确认范围。");
-            if(running)return false;running=true;attempted.add(task.subscriptionId);final long id=++sequence;final Context app=context.getApplicationContext();
+            if(running)return false;allowManualRead();context.getSharedPreferences("celllock",Context.MODE_PRIVATE).edit().remove("reloadPending").apply();running=true;attempted.add(task.subscriptionId);final long id=++sequence;final Context app=context.getApplicationContext();
             if(worker==null||worker.isShutdown())worker=Executors.newSingleThreadExecutor();
             log(task.target+" · "+(task.readOnly()?"开始读取设置":"开始"+task.title));
             worker.execute(()->execute(app,task,id));return true;
@@ -568,20 +586,22 @@ public final class MainActivity extends Activity {
                     String kind=task.commands.get(0)[0];
                     task.refreshAppendBand(initial.state);
                     if(task.backup){String note="操作前备份 · "+task.target+" · "+task.title+" · "+commandSummary(task.commands.get(0))+(task.appendBand?" · 追加目标频段":"");if(!saveSnapshot(context,prefs,task,initial.state,note))throw new IllegalStateException("备份失败，已停止后续写入。请重新选择操作。");report.items.add(new ResultItem("操作前备份","saved",Snapshots.describe(Snapshots.load(prefs,task.slot,task.subscriptionId))));}
-                    {
+                    if(kind.equals("clear-complete"))clearComplete(context,task,initial.state,report);
+                    else{
                         if(task.appendBand){ModemResult fresh=command(context,task,new String[]{"state"});if(!fresh.ok||fresh.state==null)throw new IllegalStateException("追加前重新读取失败，已停止写入。");for(String[] action:LockPlan.append(fresh.state,task.commands.get(0))){ModemResult result=command(context,task,action);report.add("追加目标频段",result);if(!result.ok)throw new IllegalStateException("追加结果未确认，已停止小区锁定。");}}
-                        List<String[]> actions=kind.equals("open-bands")?LockPlan.openSupported(initial.state):task.commands;
+                        List<String[]> actions=kind.equals("open-bands")?LockPlan.openSupported(initial.state):kind.equals("clear-quick")?LockPlan.quickClear(initial.state):task.commands;
                         boolean restoring=task.restoreSnapshot!=null;JSONObject restore=restoring?new JSONObject(task.restoreSnapshot):null;
                         if(restoring&&!Snapshots.canRestore(restore))throw new IllegalStateException("这份快照没有可恢复的已知配置。");
                         for(String[] action:actions){ModemResult result=command(context,task,action);report.add(label(action),result);if(!result.ok&&!restoring)break;}
                         ModemResult finalRead=command(context,task,new String[]{"state"});
                         if(!finalRead.ok)report.add("最终读取",finalRead);
-                        if(kind.equals("open-bands"))preservation(initial.state,finalRead.state,report,kind.equals("open-bands"));
+                        if(kind.equals("open-bands")||kind.equals("clear-quick"))preservation(initial.state,finalRead.state,report,kind.equals("open-bands"));
                         if(restoring){boolean matches=finalRead.ok&&Snapshots.matches(restore,finalRead.state);report.restoreStatus=matches?"matched":finalRead.ok?"mismatch":"unknown";report.items.add(new ResultItem("快照已知配置核对",matches?"verified":report.restoreStatus,"仍需核对："+(matches?"无；未知项目已跳过":String.join("、",Snapshots.differences(restore,finalRead.state)))));addSkipped(restore,report);}
                     }
                 }
             }catch(Exception error){
                 report.items.add(new ResultItem("操作","failed",message(error)));
+                if(!report.recoveryUnverified&&!task.commands.isEmpty()&&task.commands.get(0)[0].startsWith("clear-"))try{report.add("中止后只读核对",command(context,task,new String[]{"state"}));}catch(Exception readError){report.items.add(new ResultItem("中止后只读核对","unknown",message(readError)));}
                 synchronized(this){statuses.put(task.subscriptionId,message(error));}
             }
             catch(Throwable error){report.items.add(new ResultItem("操作","interrupted",message(error)));synchronized(this){statuses.put(task.subscriptionId,"操作状态未知，请重新读取。");}}
@@ -593,6 +613,14 @@ public final class MainActivity extends Activity {
             verifySlot(context,task);JSONObject evidence=BandDefaults.evidence(context);
             verifySlot(context,task);return Snapshots.save(prefs,task.slot,task.subscriptionId,state,note.length()>Snapshots.MAX_NOTE_LENGTH?note.substring(0,Snapshots.MAX_NOTE_LENGTH):note,evidence);
         }
+        private void clearComplete(Context context,Task task,ModemState before,OperationReport report) throws Exception {
+            BandDefaults.clearComplete((action,token)->BandDefaults.request(context,action,token),task.slot,before,report,
+                args->command(context,task,args),()->verifySlot(context,task),()->{
+                    if(!context.getSharedPreferences("celllock",Context.MODE_PRIVATE).edit().putBoolean("reloadPending",true).commit())throw new IllegalStateException("无法保存重载待刷新标记，未发送重载。");
+                    invalidateAfterReload();
+                });
+        }
+
         private void preservation(ModemState before,ModemState after,OperationReport report,boolean cells) throws Exception {
             boolean same=after!=null&&after.prefKnown&&before.prefKnown&&before.rat>=0&&before.nrMode>=0&&after.rat==before.rat&&after.nrMode==before.nrMode;
             report.items.add(new ResultItem("制式与 5G 组网",same?"unchanged":"unknown",same?"已确认保留":"无法确认保留，请刷新核对"));
