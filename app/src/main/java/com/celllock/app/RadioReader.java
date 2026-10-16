@@ -112,12 +112,7 @@ final class RadioReader {
         if (!executable.isFile()) throw new IllegalStateException("读取组件未安装");
         String command = "exec " + RootShell.quote(executable.getAbsolutePath()) + " " + args;
         if (!library.equals("libcelllock_diag.so")) return RootShell.run(command, timeout);
-        // APK 路径处于隔离 linker namespace；只在 Root 私有临时目录执行自带 ELF。
-        command = "dir=$(mktemp -d /data/local/tmp/celllock-diag.XXXXXX) || exit 1; "
-                + "trap 'rm -f \"$dir/diag\"; rmdir \"$dir\"' EXIT; "
-                + "cp " + RootShell.quote(executable.getAbsolutePath()) + " \"$dir/diag\" && "
-                + "chmod 700 \"$dir/diag\" && \"$dir/diag\" " + args;
-        return RootShell.runDiagnostic(command, timeout);
+        return RootShell.runDiagnostic(executable, args, timeout);
     }
 
     void loadSims(Consumer<List<SimInfo>> callback) {
