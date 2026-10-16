@@ -346,7 +346,7 @@ public final class MainActivity extends Activity {
     }
     private void exportLogs() {
         if(SESSION.running())return;
-        exportText="CellLock "+version()+" 诊断\n生成："+dateTime()+"\n设备："+Build.MANUFACTURER+" "+Build.MODEL+" / Android "+Build.VERSION.RELEASE+"\n目标："+simName(subscriptionId)+"\n\n"+SESSION.status(subscriptionId)+"\n\n操作记录\n"+String.join("\n\n",SESSION.logs())+"\n\n后端原始回执\n"+SESSION.rawHistory();
+        exportText="CellLock "+version()+" 诊断\n生成："+dateTime()+"\n设备："+Build.MANUFACTURER+" "+Build.MODEL+" / Android "+Build.VERSION.RELEASE+"\n目标："+simName(subscriptionId)+"\n固件："+Build.FINGERPRINT+"\n基带："+Build.getRadioVersion()+"\n\n"+SESSION.status(subscriptionId)+"\n\n操作记录\n"+String.join("\n\n",SESSION.logs())+"\n\n后端原始回执\n"+SESSION.rawHistory()+"\n\n邻区诊断\n"+reader.diagnosticSummary(subscriptionId)+"\n"+cells.diagnosticSummary();
         Intent save=new Intent(Intent.ACTION_CREATE_DOCUMENT);save.addCategory(Intent.CATEGORY_OPENABLE);save.setType("text/plain");save.putExtra(Intent.EXTRA_TITLE,"CellLock-诊断-"+new SimpleDateFormat("yyyyMMdd-HHmmss",Locale.ROOT).format(new Date())+".txt");
         try{startActivityForResult(save,REQUEST_EXPORT);}catch(android.content.ActivityNotFoundException error){showMessage("无法导出","系统未提供文件保存器。");}
     }

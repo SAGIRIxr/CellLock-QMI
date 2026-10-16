@@ -252,6 +252,7 @@ final class CellsPage extends ScrollView {
         if(awaitingRefresh)return;
         awaitingRefresh=true;stopSchedule();cancelRead();reader.invalidateMeasurements();history.clear();showEmpty("重载任务状态未核验，请手动刷新");updatePolicy();
     }
+    String diagnosticSummary(){return "页面：周边 "+neighborTotal+"，其他观测 "+otherTotal+"，待刷新 "+awaitingRefresh;}
     void refresh() {
         awaitingRefresh=false;host.onManualRefresh();
         reader.retry();

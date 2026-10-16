@@ -119,6 +119,23 @@ public final class ModemFlowTest extends Instrumentation {
                 if(phase.equals("manual")){main(()->invoke(activity,"readState",new Class<?>[]{boolean.class},true));waitComplete();check(!(boolean)call(session,"recoveryUnverified",new Class<?>[0]),"explicit refresh did not lift pending marker");}
                 check(state()!=null&&state().prefKnown&&state().hwKnown,"configuration read missing");
                 DevicePage hardware=field(activity,"device");TextView nr=field(hardware,"nrBands"),lte=field(hardware,"lteBands");
+                if(phase.equals("diagnostic")){
+                    page(0);CellsPage cells=field(activity,"cells");main(cells::refresh);
+                    for(int i=0;i<400&&(boolean)field(cells,"reading");i++)SystemClock.sleep(100);
+                    check(!(boolean)field(cells,"reading"),"diagnostic page read timeout");
+                    RadioReader reader=field(activity,"reader");String summary=reader.diagnosticSummary(sub);
+                    check(summary.contains("processor")&&summary.contains("可靠归属"),"current SIM diagnostic summary not exposed");
+                    int[] exports={0};ActivityMonitor export=new ActivityMonitor(){
+                        @Override public ActivityResult onStartActivity(Intent intent){
+                            if(!Intent.ACTION_CREATE_DOCUMENT.equals(intent.getAction()))return null;
+                            exports[0]++;check("text/plain".equals(intent.getType())&&intent.hasCategory(Intent.CATEGORY_OPENABLE),"TXT export intent mismatch");
+                            return new ActivityResult(Activity.RESULT_CANCELED,null);
+                        }
+                    };addMonitor(export);
+                    try{main(()->invoke(activity,"exportLogs",new Class<?>[0]));check(exports[0]==1,"TXT export did not use existing document flow");String text=field(activity,"exportText");check(text.contains(summary)&&text.contains(cells.diagnosticSummary()),"TXT export lost collection/classification diagnostics");evidence("diagnostic.txt",text);}
+                    finally{removeMonitor(export);}
+                    capture("neighbor-diagnostic");page(2);capture("hardware-order");page(1);capture("configuration-icon");
+                }
                 if(phase.equals("clear")){
                     if(route.equals("clear-complete")){
                         for(SimInfo other:sims)if(other.trusted()&&other.slot!=slot){main(()->invoke(activity,"selectSim",new Class<?>[]{SimInfo.class},other));page(2);waitComplete();}
