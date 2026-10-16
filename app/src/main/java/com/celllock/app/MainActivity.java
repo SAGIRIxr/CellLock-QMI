@@ -14,6 +14,8 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
+import android.text.InputFilter;
+import android.text.InputType;
 import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyManager;
 import android.view.Gravity;
@@ -22,6 +24,7 @@ import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.AdapterView;
 import android.widget.FrameLayout;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Spinner;
@@ -59,6 +62,7 @@ public final class MainActivity extends Activity {
     private SharedPreferences prefs;
     private Spinner simSpinner;
     private TextView pageTitle;
+    private View configurationEntry;
     private CellsPage cells;
     private LockPage locks;
     private DevicePage device;
@@ -75,6 +79,8 @@ public final class MainActivity extends Activity {
     private Task pendingTask;
     private ScrollView dialogScrollView;
     private int dialogScroll;
+    private EditText snapshotNoteInput;
+    private String snapshotNoteDraft="";
     private final Set<String> expandedDetails=new HashSet<>();
 
     @Override public void onCreate(Bundle saved) {
@@ -82,7 +88,7 @@ public final class MainActivity extends Activity {
         ui=new Ui(this);prefs=getSharedPreferences("celllock",MODE_PRIVATE);reader=new RadioReader(this);
         if(saved!=null){subscriptionId=saved.getInt("main.sim",SubscriptionManager.INVALID_SUBSCRIPTION_ID);selectedSlot=saved.getInt("main.slot",-1);selectedPage=Math.max(0,Math.min(2,saved.getInt("main.page")));exportText=saved.getString("main.export","");consumed=SESSION.alive()?Math.max(saved.getLong("main.consumed",-1),SESSION.deliveredId()):-1;SESSION.restoreLogs(saved.getStringArrayList("main.logs"));}
         else consumed=SESSION.deliveredId();
-        if(saved!=null){messageVisible=saved.getBoolean("main.messageVisible");messageTitle=saved.getString("main.messageTitle","");messageBody=saved.getString("main.messageBody","");dialogKind=saved.getString("main.dialogKind","message");dialogScroll=saved.getInt("main.dialogScroll");ArrayList<String> expanded=saved.getStringArrayList("main.expanded");if(expanded!=null)expandedDetails.addAll(expanded);pendingTask=Task.restore(saved.getBundle("main.pendingTask"));}
+        if(saved!=null)restoreDialog(saved);
         buildUi();ready=true;
         if(saved!=null){cells.restore(saved);locks.restore(saved);device.post(()->device.scrollTo(0,saved.getInt("main.deviceScroll")));}
         if(saved!=null&&saved.getBoolean("main.wasBusy")&&!SESSION.alive())SESSION.log("应用进程已重建，上次操作结果未知，请重新读取确认。");
@@ -93,7 +99,8 @@ public final class MainActivity extends Activity {
     private void buildUi() {
         LinearLayout root=ui.column();root.setBackgroundColor(Ui.BG);
         LinearLayout header=ui.column();header.setPadding(ui.dp(22),ui.dp(16),ui.dp(22),ui.dp(13));
-        pageTitle=ui.text(TITLES[selectedPage],24,Ui.INK);pageTitle.setTypeface(null,Typeface.BOLD);header.addView(pageTitle,ui.fill(-2));ui.gap(header,14);
+        pageTitle=ui.text(TITLES[selectedPage],24,Ui.INK);pageTitle.setTypeface(null,Typeface.BOLD);LinearLayout titleRow=ui.row();titleRow.setMinimumHeight(ui.dp(48));titleRow.addView(pageTitle,ui.weight(-2));
+        configurationEntry=ui.textButton("配置管理");configurationEntry.setOnClickListener(v->chooseRestore());titleRow.addView(configurationEntry,new LinearLayout.LayoutParams(-2,ui.dp(48)));header.addView(titleRow,ui.fill(-2));ui.gap(header,14);
         LinearLayout sim=ui.row();sim.setPadding(ui.dp(12),0,ui.dp(7),0);sim.setBackground(ui.shape(Ui.CARD,14,0));sim.addView(new LineIcon(this,LineIcon.SIM,Ui.GREEN),new LinearLayout.LayoutParams(ui.dp(19),ui.dp(23)));ui.gap(sim,7);
         simSpinner=ui.spinner(new String[]{"授权后选择 SIM"});simSpinner.setContentDescription("选择操作的 SIM 卡");sim.addView(simSpinner,ui.weight(46));header.addView(sim,ui.fill(-2));root.addView(header);
         simSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){
@@ -104,7 +111,6 @@ public final class MainActivity extends Activity {
         locks=new LockPage(this,ui,new LockPage.Host(){
             public void onRefresh(){readState(true);}
             public void onApply(String title,String summary,List<String[]> commands){confirmApply(title,summary,commands,null);}
-            public void onRestore(){chooseRestore();}
             public void onMessage(String title,String message){showMessage(title,message);}
         });
         cells=new CellsPage(this,ui,reader,new CellsPage.Host(){
@@ -129,7 +135,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showPage(int page) {
-        selectedPage=page;pageTitle.setText(TITLES[page]);
+        selectedPage=page;pageTitle.setText(TITLES[page]);configurationEntry.setVisibility(page==1?View.VISIBLE:View.GONE);
         for(int i=0;i<3;i++){boolean selected=i==page;pages[i].setVisibility(selected?View.VISIBLE:View.GONE);navigation[i].setBackground(ui.shape(selected?Ui.SOFT_GREEN:Ui.CARD,16,0));navLabels[i].setTextColor(selected?Ui.GREEN:Ui.MUTED);navIcons[i].setColor(selected?Ui.GREEN:Ui.MUTED);}
         View focus=getCurrentFocus();if(focus!=null){InputMethodManager keyboard=getSystemService(InputMethodManager.class);if(keyboard!=null)keyboard.hideSoftInputFromWindow(focus.getWindowToken(),0);focus.clearFocus();}
         cells.setForeground(resumed&&page==0);
@@ -197,27 +203,70 @@ public final class MainActivity extends Activity {
         if(SESSION.running())return;
         if(!trustedSim()){requestPermissionsManually(false);return;}
         final int sub=subscriptionId;final int slot;
-        try{slot=Backend.slotOf(this,sub);}catch(Exception error){showMessage("无法恢复",message(error));return;}
-        pendingTask=new Task(sub,slot,simName(sub),"恢复设置",new ArrayList<>(),null);openDialog("restore","恢复设置","");
+        try{slot=Backend.slotOf(this,sub);}catch(Exception error){showMessage("无法读取配置",message(error));return;}
+        pendingTask=new Task(sub,slot,simName(sub),"配置管理",new ArrayList<>(),null);openDialog("restore","配置管理","");
     }
 
-    private void restoreChoice(Task task,boolean openAll) {
-        if(task==null||task.subscriptionId!=subscriptionId||SESSION.running()){toast("当前 SIM 已改变，请重新选择");return;}
-        try{if(Backend.slotOf(this,task.subscriptionId)!=task.slot)throw new IllegalStateException("SIM 卡槽已改变，请重新选择。");}catch(Exception error){showMessage("无法恢复",message(error));return;}
-        if(openAll){ArrayList<String[]> commands=new ArrayList<>();commands.add(new String[]{"reset"});confirmApply("开放全部支持范围","开放本机支持的频段与制式，启用 SA＋NSA，并请求解除 LTE 和 5G 小区锁。",commands,null);return;}
-        JSONObject snapshot=Snapshots.load(prefs,task.slot,task.subscriptionId);
-        if(!Snapshots.canRestore(snapshot)){showMessage("暂无可恢复的初始配置","请先读取当前 SIM 的完整设置。初始配置保存后才允许写入。");return;}
+    private boolean validConfigTask(Task task) {
+        if(task==null||task.subscriptionId!=subscriptionId||SESSION.running()||!trustedSim()){toast("当前 SIM 已改变或正在操作，请重新选择");return false;}
+        try{if(Backend.slotOf(this,task.subscriptionId)!=task.slot)throw new IllegalStateException("SIM 卡槽已改变，请重新选择。");}catch(Exception error){showMessage("无法操作配置",message(error));return false;}
+        return true;
+    }
+
+    private void restoreChoice(Task task,int choice) {
+        if(!validConfigTask(task))return;
+        List<String[]> commands=new ArrayList<>();
+        if(choice==0){commands.add(new String[]{"save-config"});confirmApply("保存配置","重新读取当前 SIM 的设置，保存为一份配置快照。能读到的配置可恢复，读不到的项目会标记为未知，恢复时跳过。底层文件（EFS）的检查结果仅供参考，不会自动恢复。此操作不改变网络设置。",commands,null);return;}
+        if(choice==1){openDialog("snapshots","快照列表","");return;}
+
+    }
+
+    private void snapshotAction(Task task,JSONObject selected,int choice) {
+        if(!validConfigTask(task))return;
+        final JSONObject snapshot;
+        try{snapshot=Snapshots.find(prefs,task.slot,task.subscriptionId,selected.optString("id"));}
+        catch(Exception error){showMessage("无法读取快照",message(error));return;}
+        if(snapshot==null){showMessage("快照已不存在","请重新打开快照列表。");return;}
+        if(choice==1||choice==2){openDialog(choice==1?"snapshot-note":"snapshot-delete",choice==1?"编辑备注":"删除快照",snapshot.toString());return;}
+        if(!Snapshots.canRestore(snapshot)){showMessage("没有可自动恢复的项目",Snapshots.describe(snapshot));return;}
         List<String[]> commands=new ArrayList<>();for(String[] withSlot:Snapshots.restoreCommands(snapshot,task.slot)){String[] command=new String[withSlot.length-1];command[0]=withSlot[0];System.arraycopy(withSlot,2,command,1,withSlot.length-2);commands.add(command);}
-        confirmApply("恢复初始配置","恢复此 SIM 首次保存的完整频段、制式和 5G 组网，并请求解除 LTE 和 5G 小区锁。\n"+Snapshots.describe(snapshot),commands,snapshot.toString());
+        confirmApply("读取配置","仅应用快照中可恢复的已知配置，未知项跳过，小区锁按保存内容恢复。\n"+snapshotLabel(snapshot)+"\n"+Snapshots.describe(snapshot),commands,snapshot.toString());
+    }
+
+    private void updateSnapshot(Task task,JSONObject snapshot,String note) {
+        if(!validConfigTask(task))return;
+        boolean ok=note==null?Snapshots.delete(prefs,task.slot,task.subscriptionId,snapshot.optString("id")):Snapshots.updateNote(prefs,task.slot,task.subscriptionId,snapshot.optString("id"),note);
+        if(!ok){showMessage("快照更新未确认","快照可能已不存在或本地保存失败，请重新打开列表确认。");return;}
+        SESSION.log(task.target+" · "+(note==null?"已删除快照 · "+snapshotLabel(snapshot):"快照备注已更新为："+(note.trim().isEmpty()?"（无备注）":note.trim())));
+        pendingTask=task;openDialog("snapshots","快照列表","");
+    }
+
+    private static String snapshotLabel(JSONObject snapshot) {
+        String note=snapshot.optString("note").trim();return note.isEmpty()?recordTime(snapshot):note+"\n"+recordTime(snapshot);
+    }
+
+    private static String recordTime(JSONObject record) {
+        return record.optLong("time")>0?new SimpleDateFormat("yyyy-MM-dd HH:mm:ss",Locale.ROOT).format(new Date(record.optLong("time"))):"保存时间未知";
+    }
+
+    private void recordHeading(LinearLayout body,JSONObject record) {
+        String note=record.optString("note").trim();if(!note.isEmpty()){body.addView(ui.title(note));ui.gap(body,6);}
+        if(record.has("time")){body.addView(ui.text(recordTime(record),11,Ui.HINT));ui.gap(body,12);}
+    }
+
+    private EditText snapshotNote(LinearLayout body) {
+        body.addView(ui.caption("备注（选填，最多 "+Snapshots.MAX_NOTE_LENGTH+" 个字符）"));ui.gap(body,8);
+        EditText input=ui.numberInput("例如：日常使用、n78 测试");input.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE);input.setSingleLine(false);input.setMinLines(2);input.setMaxLines(4);input.setTextSize(14);input.setFilters(new InputFilter[]{new InputFilter.LengthFilter(Snapshots.MAX_NOTE_LENGTH)});input.setText(snapshotNoteDraft);body.addView(input,ui.fill(-2));snapshotNoteInput=input;return input;
     }
 
     private void refreshUi() {
-        if(!ready)return;boolean busy=SESSION.running();Ui.enable(simSpinner,!busy);locks.setNrCombinedOnly(SESSION.nrCombinedOnly(subscriptionId));locks.setState(SESSION.state(subscriptionId));locks.setBusy(busy);cells.setBusy(busy);
+        if(!ready)return;boolean busy=SESSION.running();Ui.enable(simSpinner,!busy);Ui.enable(configurationEntry,!busy);locks.setNrCombinedOnly(SESSION.nrCombinedOnly(subscriptionId));locks.setState(SESSION.state(subscriptionId));locks.setBusy(busy);cells.setBusy(busy);
         device.update(SESSION.state(subscriptionId),SESSION.status(subscriptionId),SESSION.lastRead(subscriptionId),busy,SESSION.logs(),simStatus);
     }
 
     private void receive(Completion completion) {
-        if(!ready||isDestroyed())return;refreshUi();
+        if(!ready||isDestroyed())return;
+        refreshUi();
         if(!resumed||completion==null||completion.id<=consumed)return;
         consumed=completion.id;SESSION.markDelivered(consumed);
         if(!completion.readOnly)openDialog("result",completion.report.dialogTitle(),completion.report.encode());
@@ -251,8 +300,16 @@ public final class MainActivity extends Activity {
 
     @Override protected void onSaveInstanceState(Bundle out) {
         super.onSaveInstanceState(out);out.putInt("main.sim",subscriptionId);out.putInt("main.slot",selectedSlot);out.putInt("main.page",selectedPage);out.putString("main.export",exportText);out.putLong("main.consumed",consumed);out.putBoolean("main.wasBusy",SESSION.running());out.putStringArrayList("main.logs",SESSION.savedLogs());out.putInt("main.deviceScroll",device.getScrollY());cells.save(out);locks.save(out);
-        out.putBoolean("main.messageVisible",messageVisible);out.putString("main.messageTitle",messageTitle);out.putString("main.messageBody",messageBody);
+        out.putAll(dialogState());
+    }
+    private Bundle dialogState(){
+        Bundle out=new Bundle();out.putBoolean("main.messageVisible",messageVisible);out.putString("main.messageTitle",messageTitle);out.putString("main.messageBody",messageBody);
+        out.putString("main.snapshotNote",snapshotNoteInput==null?snapshotNoteDraft:snapshotNoteInput.getText().toString());
         out.putString("main.dialogKind",dialogKind);out.putInt("main.dialogScroll",dialogScrollView==null?dialogScroll:dialogScrollView.getScrollY());out.putStringArrayList("main.expanded",new ArrayList<>(expandedDetails));if(pendingTask!=null)out.putBundle("main.pendingTask",pendingTask.save());
+        return out;
+    }
+    private void restoreDialog(Bundle saved){
+        messageVisible=saved.getBoolean("main.messageVisible");messageTitle=saved.getString("main.messageTitle","");messageBody=saved.getString("main.messageBody","");dialogKind=saved.getString("main.dialogKind","message");dialogScroll=saved.getInt("main.dialogScroll");snapshotNoteDraft=saved.getString("main.snapshotNote","");expandedDetails.clear();ArrayList<String> expanded=saved.getStringArrayList("main.expanded");if(expanded!=null)expandedDetails.addAll(expanded);pendingTask=Task.restore(saved.getBundle("main.pendingTask"));
     }
     private void exportLogs() {
         if(SESSION.running())return;
@@ -266,34 +323,61 @@ public final class MainActivity extends Activity {
     private void openDialog(String kind,String title,String body) {
         if(isDestroyed()||isFinishing())return;
         dialogKind=kind;messageTitle=title;messageBody=body;messageVisible=true;dialogScroll=0;expandedDetails.clear();
-        if(!kind.equals("restore")&&!kind.equals("confirm"))pendingTask=null;
+        snapshotNoteDraft="";if(kind.equals("snapshot-note"))try{snapshotNoteDraft=new JSONObject(body).optString("note");}catch(Exception ignored){}
+        if(!kind.equals("restore")&&!kind.equals("confirm")&&!kind.startsWith("snapshot"))pendingTask=null;
         if(resumed)renderDialog();
     }
     private void renderDialog() {
         if(isDestroyed()||isFinishing())return;
         if(messageDialog!=null){messageDialog.setOnDismissListener(null);messageDialog.dismiss();}
-        LinearLayout body=ui.column();String subtitle="",action="知道了",cancel=null;Runnable apply=null;
+        snapshotNoteInput=null;
+        LinearLayout body=ui.column();String subtitle="",action="知道了",cancel=null,direct=null;Runnable apply=null,runDirect=null;
         final Task task=pendingTask;
         switch(dialogKind){
             case "restore":
                 subtitle=task==null?"请核对所选 SIM":task.target;
-                JSONObject snapshot=task==null?null:Snapshots.load(prefs,task.slot,task.subscriptionId);
-                if(snapshot!=null){body.addView(ui.caption("初始配置保存于 "+new SimpleDateFormat("yyyy-MM-dd HH:mm:ss",Locale.ROOT).format(new Date(snapshot.optLong("time")))));ui.gap(body,14);}
-                ui.choice(body,"恢复初始配置","原样恢复此 SIM 首次保存的频段、制式与组网，并请求解除小区锁。",()->restoreChoice(task,false));ui.gap(body,12);
-                ui.choice(body,"开放全部支持范围","开放硬件支持的频段与制式，启用 SA＋NSA，并请求解除小区锁。",()->restoreChoice(task,true));ui.gap(body,14);
-                body.addView(ui.caption("初始配置是本程序保存的设置，不代表手机出厂值。"));action="取消";break;
-            case "confirm":
+                ui.choice(body,"保存配置","重新读取当前设置，新增快照并可填写备注，不改变基带设置。",()->restoreChoice(task,0));ui.gap(body,12);
+                ui.choice(body,"读取配置","选择此 SIM 的快照，可读取、编辑备注或删除。",()->restoreChoice(task,1));ui.gap(body,12);
+                body.addView(ui.caption("配置按 SIM 分别保存。首次完整读取会自动备份。每份快照都会列出可恢复的设置、恢复时会跳过的未知项，以及仅供参考的信息。"));action="关闭";break;
+            case "snapshots":
+                subtitle=task==null?"请核对所选 SIM":task.target;
+                if(task!=null)try{
+                    List<JSONObject> snapshots=Snapshots.list(prefs,task.slot,task.subscriptionId);
+                    if(snapshots.isEmpty())body.addView(ui.caption("暂无快照，请先保存配置。"));
+                    for(JSONObject snapshot:snapshots){ui.choice(body,snapshot.optString("note").trim().isEmpty()?"配置快照":snapshot.optString("note").trim(),Snapshots.describe(snapshot),recordTime(snapshot),()->openDialog("snapshot","快照详情",snapshot.toString()));ui.gap(body,12);}
+                }catch(Exception error){body.addView(ui.caption(message(error)));}
+                action="关闭";break;
+            case "snapshot":case "snapshot-note":case "snapshot-delete":{
+                subtitle=task==null?"请核对所选 SIM":task.target;
+                try{
+                    JSONObject snapshot=new JSONObject(messageBody);recordHeading(body,snapshot);body.addView(selectable(Snapshots.describe(snapshot),14,Ui.INK));ui.gap(body,16);
+                    if(dialogKind.equals("snapshot")){
+                        ui.choice(body,"读取配置","只恢复已知项目，未知项跳过；详情列出实际恢复范围。",()->snapshotAction(task,snapshot,0));ui.gap(body,12);
+                        ui.choice(body,"编辑备注","仅修改这份快照的备注，不改变保存的配置。",()->snapshotAction(task,snapshot,1));ui.gap(body,12);
+                        android.widget.Button delete=ui.dangerButton("删除快照");delete.setOnClickListener(v->snapshotAction(task,snapshot,2));body.addView(delete,ui.fill(48));action="关闭";
+                    }else if(dialogKind.equals("snapshot-note")){
+                        EditText input=snapshotNote(body);action="保存备注";cancel="取消";apply=()->updateSnapshot(task,snapshot,input.getText().toString());
+                    }else{
+                        body.addView(ui.caption("确认删除这份快照？删除后无法恢复，不改变当前基带设置。"));action="确认删除";cancel="取消";apply=()->updateSnapshot(task,snapshot,null);
+                    }
+                }catch(Exception error){body.addView(ui.caption("快照无法读取，请重新打开列表。"));}
+                break;
+            }
+            case "confirm":{
                 subtitle=task==null?"":task.target;body.addView(selectable(messageBody,14,Ui.INK));ui.gap(body,18);
-                TextView warning=selectable("可能短暂断网；离开目标覆盖区前记得恢复。",12,Ui.AMBER);warning.setPadding(ui.dp(13),ui.dp(12),ui.dp(13),ui.dp(12));warning.setBackground(ui.shape(Ui.SOFT_AMBER,12,0));body.addView(warning);
-                action=task==null?"确认":task.restoreSnapshot!=null||task.commands.get(0)[0].equals("reset")?"确认恢复":task.commands.get(0)[0].equals("cell-clear")?"确认解除":task.commands.get(0)[0].startsWith("band-")?"应用频段":"确认应用";
-                cancel="取消";apply=()->startConfirmed(task);break;
+                final EditText note=task!=null&&task.saving()?snapshotNote(body):null;if(note!=null)ui.gap(body,18);
+                TextView warning=selectable(note!=null?"保存会新增一份快照，已有快照会保留。":"可能短暂断网；请核对操作范围。",12,Ui.AMBER);warning.setPadding(ui.dp(13),ui.dp(12),ui.dp(13),ui.dp(12));warning.setBackground(ui.shape(Ui.SOFT_AMBER,12,0));body.addView(warning);
+                action=task!=null&&task.saving()?"确认保存":task!=null&&task.restoreSnapshot!=null?"应用配置":"确认应用";
+                cancel="返回";apply=()->{if(note==null)startConfirmed(task);else{List<String[]> commands=new ArrayList<>();commands.add(new String[]{"save-config",note.getText().toString()});startConfirmed(new Task(task.subscriptionId,task.slot,task.target,task.title,commands,null));}};
+                break;
+            }
             case "result":
                 OperationReport report=OperationReport.decode(messageBody);
                 if(report!=null){
                     subtitle=report.target;
                     if(!report.restoreStatus.isEmpty()){
                         boolean matched=report.restoreStatus.equals("matched");
-                        TextView conclusion=selectable(matched?"初始配置已与保存的原值一致。小区锁解除结果见下方。":report.restoreStatus.equals("mismatch")?"部分配置仍与保存的原值不同，具体差异见下方完整核对。":"配置回读不完整，暂时无法核对初始配置。",13,matched?Ui.GREEN:Ui.AMBER);
+                        TextView conclusion=selectable(matched?"可恢复的已知项目已与快照一致；未知项未改动。":report.restoreStatus.equals("mismatch")?"部分配置仍与保存的原值不同，具体差异见下方完整核对。":"配置回读不完整，暂时无法核对已保存配置。",13,matched?Ui.GREEN:Ui.AMBER);
                         conclusion.setPadding(ui.dp(12),ui.dp(12),ui.dp(12),ui.dp(12));conclusion.setBackground(ui.shape(matched?Ui.SOFT_GREEN:Ui.SOFT_AMBER,12,0));body.addView(conclusion);ui.gap(body,10);
                     }
                     for(ResultItem item:report.items)resultRow(body,item);details(body,"诊断详情",report.details,"result");
@@ -312,8 +396,8 @@ public final class MainActivity extends Activity {
                 break;
             default:body.addView(selectable(messageBody,13,Ui.INK));
         }
-        AlertDialog dialog=ui.dialog(messageTitle,subtitle,body,action,apply,cancel);messageDialog=dialog;
-        dialog.setOnDismissListener(ignored->{if(messageDialog==dialog){messageDialog=null;messageVisible=false;messageTitle="";messageBody="";pendingTask=null;dialogScrollView=null;expandedDetails.clear();}});
+        AlertDialog dialog=ui.dialog(messageTitle,subtitle,body,action,apply,cancel,direct,runDirect);messageDialog=dialog;
+        dialog.setOnDismissListener(ignored->{if(messageDialog==dialog){messageDialog=null;messageVisible=false;messageTitle="";messageBody="";pendingTask=null;dialogScrollView=null;snapshotNoteInput=null;expandedDetails.clear();}});
         dialog.show();dialogScrollView=(ScrollView)body.getParent();dialogScrollView.post(()->{if(dialogScrollView!=null)dialogScrollView.scrollTo(0,dialogScroll);});
     }
     private TextView selectable(String value,int size,int color){TextView text=ui.text(value,size,color);text.setTextIsSelectable(true);return text;}
@@ -344,6 +428,7 @@ public final class MainActivity extends Activity {
         final int subscriptionId,slot;final String target,title,restoreSnapshot;final List<String[]> commands;
         Task(int subscriptionId,int slot,String target,String title,List<String[]> commands,String restoreSnapshot){this.subscriptionId=subscriptionId;this.slot=slot;this.target=target;this.title=title;this.commands=copyCommands(commands);this.restoreSnapshot=restoreSnapshot;}
         boolean readOnly(){return commands.isEmpty();}
+        boolean saving(){return commands.size()==1&&commands.get(0)[0].equals("save-config");}
         Bundle save(){Bundle out=new Bundle();out.putInt("sub",subscriptionId);out.putInt("slot",slot);out.putString("target",target);out.putString("title",title);out.putString("snapshot",restoreSnapshot);out.putInt("count",commands.size());for(int i=0;i<commands.size();i++)out.putStringArray("command"+i,commands.get(i));return out;}
         static Task restore(Bundle in){if(in==null)return null;List<String[]> commands=new ArrayList<>();for(int i=0;i<in.getInt("count");i++)commands.add(in.getStringArray("command"+i));return new Task(in.getInt("sub"),in.getInt("slot"),in.getString("target",""),in.getString("title",""),commands,in.getString("snapshot"));}
     }
@@ -400,7 +485,7 @@ public final class MainActivity extends Activity {
             command=command.clone();
             if(nrCombinedOnly(task.subscriptionId)){
                 if((command[0].equals("band-nr")||command[0].equals("restore-nr"))&&command.length>1&&command[1].equals("both"))command[0]+="-combined";
-                else if(command[0].equals("reset"))command[0]="reset-combined";
+
             }
             verifySlot(context,task);String[] args=new String[command.length+1];args[0]=command[0];args[1]=String.valueOf(task.slot);if(command.length>1)System.arraycopy(command,1,args,2,command.length-1);
             ModemResult result=Backend.run(context,args);
@@ -418,24 +503,38 @@ public final class MainActivity extends Activity {
             try{
                 SharedPreferences prefs=context.getSharedPreferences("celllock",Context.MODE_PRIVATE);
                 ModemResult initial=command(context,task,new String[]{"state"});
-                if(initial.ok&&initial.state!=null)Snapshots.rememberIfFirst(prefs,task.slot,task.subscriptionId,initial.state);
-                if(task.readOnly()){report.add("读取设置",initial);}
-                else {
-                    JSONObject snapshot=Snapshots.load(prefs,task.slot,task.subscriptionId);
+                if(task.readOnly()&&initial.ok&&initial.state!=null)Snapshots.rememberIfFirst(prefs,task.slot,task.subscriptionId,initial.state);
+                if(task.saving()){
+                    String note=task.commands.get(0).length>1?task.commands.get(0)[1]:"";
+                    if(!saveSnapshot(context,prefs,task,initial.state,note))throw new IllegalStateException("配置读取或本地保存失败；未确认保存成功。");
+                    report.items.add(new ResultItem("保存配置","saved","已新增快照。\n"+Snapshots.describe(Snapshots.load(prefs,task.slot,task.subscriptionId))));
+                }else if(task.readOnly()){report.add("读取设置",initial);}
+                else{
                     if(!initial.ok||initial.state==null)throw new IllegalStateException("写入前读取未完成，未执行写入。\n"+initial.message);
-                    if(!Snapshots.canRestore(snapshot))throw new IllegalStateException("尚未保存可恢复的初始设置，未执行写入。请先读取完整设置。");
                     boolean restoring=task.restoreSnapshot!=null;JSONObject restore=restoring?new JSONObject(task.restoreSnapshot):null;
-                    if(restoring&&!Snapshots.canRestore(restore))throw new IllegalStateException("初始设置不完整，未执行恢复。");
+                    if(restoring&&!Snapshots.canRestore(restore))throw new IllegalStateException("这份快照没有可恢复的已知配置。");
                     for(String[] action:task.commands){ModemResult result=command(context,task,action);report.add(label(action),result);if(!result.ok&&!restoring)break;}
                     ModemResult finalRead=command(context,task,new String[]{"state"});
                     if(!finalRead.ok)report.add("最终读取",finalRead);
-                    if(restoring){boolean matches=finalRead.ok&&Snapshots.matches(restore,finalRead.state);report.restoreStatus=matches?"matched":finalRead.ok&&finalRead.state!=null&&finalRead.state.prefKnown?"mismatch":"unknown";report.items.add(new ResultItem("初始配置完整核对",matches?"verified":report.restoreStatus.equals("mismatch")?"mismatch":"unknown",matches?"频段、制式与组网已与保存的原值一致。":"仍需核对："+String.join("、",Snapshots.differences(restore,finalRead.state))));}
+                    if(restoring){boolean matches=finalRead.ok&&Snapshots.matches(restore,finalRead.state);report.restoreStatus=matches?"matched":finalRead.ok?"mismatch":"unknown";report.items.add(new ResultItem("快照已知配置核对",matches?"verified":report.restoreStatus,"仍需核对："+(matches?"无；未知项目已跳过":String.join("、",Snapshots.differences(restore,finalRead.state)))));addSkipped(restore,report);}
+
                 }
             }catch(Exception error){report.items.add(new ResultItem("操作","failed",message(error)));synchronized(this){statuses.put(task.subscriptionId,message(error));}}
             catch(Throwable error){report.items.add(new ResultItem("操作","interrupted",message(error)));synchronized(this){statuses.put(task.subscriptionId,"操作状态未知，请重新读取。");}}
             synchronized(this){logs.add(new LogRecord(clock(),task.target+" · "+task.title,report));trimLogs();latest=new Completion(id,task,report);running=false;if(owner.get()==null&&worker!=null)worker.shutdown();}
             deliver();
         }
-        private String label(String[] action){switch(action[0]){case "cell-lte":return "LTE 小区";case "cell-nr":return "5G 小区";case "freq-nr":return "5G 频点";case "cell-clear":return action.length>1&&action[1].equals("nr")?"解除 5G 小区锁":"解除 LTE 小区锁";case "restore-lte":case "band-lte":return "LTE 频段";case "restore-nr":case "band-nr":return "5G "+(action[1].equals("both")?"SA＋NSA":action[1].toUpperCase(Locale.ROOT))+" 频段";case "restore-legacy":return "原始 2G / 3G 配置";case "band-gsm":return "GSM 频段";case "band-wcdma":return "WCDMA 频段";case "nr-mode":return "5G 组网";case "rat":return "网络制式";case "reset":return "开放全部支持范围";default:return action[0];}}
+        private boolean saveSnapshot(Context context,SharedPreferences prefs,Task task,ModemState state,String note) {
+            if(state==null||!state.readAttempted)return false;
+            verifySlot(context,task);JSONObject evidence=BandDefaults.evidence(context);
+            verifySlot(context,task);return Snapshots.save(prefs,task.slot,task.subscriptionId,state,note.length()>Snapshots.MAX_NOTE_LENGTH?note.substring(0,Snapshots.MAX_NOTE_LENGTH):note,evidence);
+        }
+        private void addSkipped(JSONObject snapshot,OperationReport report){
+            for(String field:new String[]{"lte","nrSa","nrNsa","legacyMask","rat","nrMode"})if(snapshot.isNull(field))report.items.add(new ResultItem("未知 "+field,"skipped","未改动此项目"));
+            if(snapshot.has("evidence"))report.items.add(new ResultItem("EFS 与设备证据","recorded","未自动重放持久存储内容或缺失态"));
+            if(snapshot.optInt("schema")==2||snapshot.optJSONObject("lteCell")==null||!snapshot.optJSONObject("lteCell").optBoolean("known"))report.items.add(new ResultItem("未知 LTE 小区锁","skipped","未清除或重放"));
+            JSONObject nr=snapshot.optJSONObject("nrCell");if(nr==null||!nr.optBoolean("known"))report.items.add(new ResultItem("未知 5G 小区/频点锁","skipped","未清除或重放"));else if(nr.optInt("type")>2)report.items.add(new ResultItem("5G 锁类型 "+nr.optInt("type"),"recorded","未验证重放，已跳过"));
+        }
+        private String label(String[] action){switch(action[0]){case "cell-lte-list":case "cell-lte":return "LTE 小区";case "cell-nr-mask":case "cell-nr":return "5G 小区";case "freq-nr-list":case "freq-nr":return "5G 频点";case "cell-clear":return action.length>1&&action[1].equals("nr")?"清除 5G 小区/频点锁":"清除 LTE 小区锁";case "restore-lte":case "band-lte":return "LTE 频段";case "restore-nr":case "band-nr":return "5G "+(action[1].equals("both")?"SA＋NSA":action[1].toUpperCase(Locale.ROOT))+" 频段";case "restore-legacy":return "原始 2G / 3G 配置";case "band-gsm":return "GSM 频段";case "band-wcdma":return "WCDMA 频段";case "nr-mode":return "5G 组网";case "rat":return "网络制式";default:return action[0];}}
     }
 }

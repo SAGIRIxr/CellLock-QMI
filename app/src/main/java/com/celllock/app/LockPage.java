@@ -21,7 +21,6 @@ final class LockPage extends ScrollView {
     interface Host {
         void onRefresh();
         void onApply(String title, String summary, List<String[]> commands);
-        void onRestore();
         void onMessage(String title, String message);
     }
 
@@ -45,7 +44,7 @@ final class LockPage extends ScrollView {
     private TextView nrHint,nrUnknownHint,bandCount,bandHint,ratCurrent,ratHint,nrModeHint;
     private EditText lteArfcn,ltePci,nrArfcn,nrPci,nrBand;
     private Spinner scs;
-    private Button refresh,cellApply,cellClear,bandApply,bandAll,bandCurrent,bandNone,ratApply,restoreButton;
+    private Button refresh,cellApply,cellClear,bandApply,bandAll,bandCurrent,bandNone,ratApply;
     private ModemState state;
     private RadioCell serving;
     private boolean busy,changingFields,ratEdited,nrModeEdited,nrCombinedOnly;
@@ -63,8 +62,6 @@ final class LockPage extends ScrollView {
         controls.add(sectionTabs);page.addView(sectionTabs,ui.fill(-2));ui.gap(page,15);
         for(int i=0;i<sections.length;i++){sections[i]=ui.column();page.addView(sections[i],ui.fill(-2));}
         buildRat(sections[0]);buildBands(sections[1]);buildCell(sections[2]);
-        ui.gap(page,20);restoreButton=ui.dangerButton("恢复设置");restoreButton.setOnClickListener(v->{if(!busy)host.onRestore();});
-        controls.add(restoreButton);page.addView(restoreButton,ui.fill(48));
         setState(null);showSection();
     }
 

@@ -445,8 +445,10 @@ static void print_lte_cell(const LteCell *s) {
 static void print_nr_cell(const NrCell *s) {
     printf("{\"known\":%s,\"ackOnly\":%s,\"type\":%d", s->known ? "true" : "false",
            s->ack_only ? "true" : "false", s->type);
-    if (s->type == NR_LOCK_PCI && s->known)
+    if (s->type == NR_LOCK_PCI && s->known) {
+        putchar(','); print_mask("bands", s->bands, 512, 1);
         printf(",\"arfcn\":%ld,\"pci\":%d,\"band\":%d,\"scs\":%d", s->arfcn, s->pci, s->band, s->scs);
+    }
     if (s->type == NR_LOCK_ARFCN && s->known) {
         fputs(",\"arfcns\":[", stdout);
         for (int i = 0; i < s->arfcn_count; ++i)
@@ -492,7 +494,7 @@ static int number(const char *s, unsigned limit, unsigned *v) {
 
 /* "1,3,41" → 位掩码；返回频段个数，格式错误返回 -1 */
 static int band_list(const char *arg, unsigned max, uint8_t *mask) {
-    char buf[1024];
+    char buf[4096];
     if (!arg || !*arg || strlen(arg) >= sizeof buf || arg[0] == ',' ||
         arg[strlen(arg) - 1] == ',' || strstr(arg, ",,")) return -1;
     strcpy(buf, arg);
@@ -513,33 +515,35 @@ static int scs_index(unsigned khz) {
 
 /* ---------- 写入 ---------- */
 
-static int lte_cell_set(int clear, unsigned earfcn, unsigned pci) {
-    uint8_t p[32];
-    p[0] = 1;
-    put16(p + 1, clear ? 1 : 7);
-    p[3] = clear ? 0 : 1;
+static int lte_cells_set(unsigned count, const unsigned *earfcn, const unsigned *pci) {
+    uint8_t p[8 + MAX_CELLS * 6];
+    p[0] = 1; put16(p + 1, 1 + count * 6); p[3] = count;
     int at = 4;
-    if (!clear) { put16(p + at, pci); put32(p + at + 2, earfcn); at += 6; }
+    for (unsigned i = 0; i < count; ++i) { put16(p + at, pci[i]); put32(p + at + 2, earfcn[i]); at += 6; }
     p[at++] = 0x10; put16(p + at, 1); at += 2; p[at++] = 1;
     return write_request(NAS_LTE_CELL_SET, p, at);
 }
+static int lte_cell_set(int clear, unsigned earfcn, unsigned pci) { return lte_cells_set(clear ? 0 : 1, &earfcn, &pci); }
 
-static int nr_cell_set(int type, unsigned arfcn, unsigned pci, unsigned band, unsigned scs) {
-    uint8_t p[96];
+static int nr_cells_set(int type, unsigned arfcn, unsigned pci, const uint8_t *mask, unsigned scs,
+                        unsigned count, const unsigned *arfcns, const unsigned *spacings) {
+    uint8_t p[11 + MAX_ARFCNS * 8 + 77];
     p[0] = 1; put16(p + 1, 4); put32(p + 3, type);
     int at = 7;
     if (type == NR_LOCK_PCI) {
         p[at] = 0x10; put16(p + at + 1, 74);
         put16(p + at + 3, pci); put32(p + at + 5, scs); put32(p + at + 9, arfcn);
-        memset(p + at + 13, 0, 64);
-        bit_set(p + at + 13, band);
-        at += 77;
+        memcpy(p + at + 13, mask, 64); at += 77;
     } else if (type == NR_LOCK_ARFCN) {
-        p[at] = 0x11; put16(p + at + 1, 9);
-        p[at + 3] = 1; put32(p + at + 4, arfcn); put32(p + at + 8, scs);
-        at += 12;
+        p[at] = 0x11; put16(p + at + 1, 1 + count * 8); p[at + 3] = count; at += 4;
+        for (unsigned i = 0; i < count; ++i) { put32(p + at, arfcns[i]); put32(p + at + 4, spacings[i]); at += 8; }
     }
     return write_request(NAS_NR_CELL_SET, p, at);
+}
+static int nr_cell_set(int type, unsigned arfcn, unsigned pci, unsigned band, unsigned scs) {
+    uint8_t mask[64] = {0};
+    if (band) bit_set(mask, band);
+    return nr_cells_set(type, arfcn, pci, mask, scs, 1, &arfcn, &scs);
 }
 
 /* B1–B64 用旧字段最稳；有更高频段时只能用扩展字段（两者同时发会被拒） */
@@ -630,12 +634,15 @@ static int nr_freq_is(const NrCell *s, unsigned arfcn, unsigned scs) {
 
 typedef enum {
     CMD_STATE, CMD_CELL_LTE, CMD_CELL_NR, CMD_FREQ_NR, CMD_CELL_CLEAR,
-    CMD_BAND_LTE, CMD_BAND_NR, CMD_BAND_GSM, CMD_BAND_WCDMA, CMD_RAT, CMD_NR_MODE, CMD_RESET, CMD_LEGACY
+    CMD_BAND_LTE, CMD_BAND_NR, CMD_BAND_GSM, CMD_BAND_WCDMA, CMD_RAT, CMD_NR_MODE, CMD_RESET, CMD_LEGACY, CMD_LTE_LIST, CMD_NR_MASK, CMD_NR_LIST
 } Command;
 
 static const struct { const char *name; Command cmd; int argc; } COMMANDS[] = {
     {"state", CMD_STATE, 3},
     {"cell-lte", CMD_CELL_LTE, 5},
+    {"cell-lte-list", CMD_LTE_LIST, 4},
+    {"cell-nr-mask", CMD_NR_MASK, 7},
+    {"freq-nr-list", CMD_NR_LIST, 4},
     {"cell-nr", CMD_CELL_NR, 7},
     {"freq-nr", CMD_FREQ_NR, 5},
     {"cell-clear", CMD_CELL_CLEAR, 4},
@@ -663,6 +670,7 @@ typedef struct {
     int lte, nr, sa, nsa, all, exact, combined;
     uint8_t mask[64];
     uint64_t legacy;
+    unsigned count, arfcns[MAX_CELLS], params[MAX_CELLS];
 } Job;
 
 static const char *stage = "arguments";
@@ -726,6 +734,23 @@ static int parse_legacy(const char *arg, int gsm, uint64_t *out) {
     return m != 0;
 }
 
+static int parse_cell_pairs(const char *arg, int nr, Job *job) {
+    char buf[2048];
+    if (!arg || !*arg || strlen(arg) >= sizeof buf || arg[0] == ',' || arg[strlen(arg) - 1] == ',' || strstr(arg, ",,")) return 0;
+    strcpy(buf, arg);
+    char *save = NULL, *tok = strtok_r(buf, ",", &save);
+    while (tok) {
+        if (job->count >= (nr ? MAX_ARFCNS : MAX_CELLS) || !number(tok, nr ? 3279165 : 65535, &job->arfcns[job->count])) return 0;
+        tok = strtok_r(NULL, ",", &save);
+        unsigned value;
+        if (!tok || !number(tok, nr ? 240 : 503, &value)) return 0;
+        if (nr) { int idx = scs_index(value); if (idx < 0) return 0; value = (unsigned)idx; }
+        job->params[job->count++] = value;
+        tok = strtok_r(NULL, ",", &save);
+    }
+    return job->count > 0;
+}
+
 static int parse_job(int argc, char **argv, Job *job) {
     memset(job, 0, sizeof *job);
     int found = 0;
@@ -743,6 +768,12 @@ static int parse_job(int argc, char **argv, Job *job) {
     unsigned khz = 0;
     int idx;
     switch (job->cmd) {
+        case CMD_LTE_LIST: return parse_cell_pairs(argv[3], 0, job);
+        case CMD_NR_LIST: return parse_cell_pairs(argv[3], 1, job);
+        case CMD_NR_MASK:
+            if (!number(argv[3], 3279165, &job->arfcn) || !number(argv[4], 1007, &job->pci) ||
+                band_list(argv[5], 512, job->mask) <= 0 || !number(argv[6], 240, &khz) || (idx = scs_index(khz)) < 0) return 0;
+            job->scs = (unsigned)idx; return 1;
         case CMD_CELL_LTE:
             if (number(argv[3], 65535, &job->arfcn) && number(argv[4], 503, &job->pci)) return 1;
             report("arguments", "LTE 锁小区需要 EARFCN 0–65535 与 PCI 0–503");
@@ -925,8 +956,8 @@ static int await_pref(const Job *job, const Hardware *hw, Pref *p, uint64_t lega
 
 static int target_known(const Job *job, const State *s) {
     switch(job->cmd) {
-        case CMD_CELL_LTE: return s->lte.known;
-        case CMD_CELL_NR: case CMD_FREQ_NR: return s->nr.known;
+        case CMD_CELL_LTE: case CMD_LTE_LIST: return s->lte.known;
+        case CMD_CELL_NR: case CMD_FREQ_NR: case CMD_NR_LIST: case CMD_NR_MASK: return s->nr.known;
         case CMD_CELL_CLEAR: return (!job->lte || s->lte.known) && (!job->nr || s->nr.known);
         case CMD_BAND_LTE: return s->pref.has_lte;
         case CMD_BAND_NR: return (!job->sa || s->pref.has_sa) && (!job->nsa || s->pref.has_nsa);
@@ -937,6 +968,27 @@ static int target_known(const Job *job, const State *s) {
     }
 }
 
+static int lte_list_is(const Job *job, const LteCell *cell) {
+    if (!cell->known || cell->count != (int)job->count) return 0;
+    int used[MAX_CELLS] = {0};
+    for (unsigned i = 0; i < job->count; ++i) {
+        unsigned j = 0;
+        for (; j < job->count; ++j) if (!used[j] && job->arfcns[i] == cell->earfcn[j] && job->params[i] == cell->pci[j]) { used[j] = 1; break; }
+        if (j == job->count) return 0;
+    }
+    return 1;
+}
+static int nr_list_is(const Job *job, const NrCell *cell) {
+    if (!cell->known || cell->type != NR_LOCK_ARFCN || cell->arfcn_count != (int)job->count) return 0;
+    int used[MAX_ARFCNS] = {0};
+    for (unsigned i = 0; i < job->count; ++i) {
+        unsigned j = 0;
+        for (; j < job->count; ++j) if (!used[j] && job->arfcns[i] == cell->arfcns[j] && (unsigned)SCS_KHZ[job->params[i]] == cell->arfcn_scs[j]) { used[j] = 1; break; }
+        if (j == job->count) return 0;
+    }
+    return 1;
+}
+
 /* 1 = 写入并回读一致；0 = 失败；-1 = 已设置好 stage/message 的部分失败 */
 static int run_job(const Job *job, const Hardware *hw, State *s) {
     int sent = 1;
@@ -944,6 +996,18 @@ static int run_job(const Job *job, const Hardware *hw, State *s) {
     if (job->combined) nr_combined_only = 1;
 
     switch (job->cmd) {
+        case CMD_LTE_LIST:
+            if (!s->lte.known) { report("state", "LTE 小区锁状态未知，未写入"); return -1; }
+            sent = lte_cells_set(job->count, job->arfcns, job->params); read_state(s);
+            return sent && lte_list_is(job, &s->lte);
+        case CMD_NR_MASK:
+            if (!nr_can_write(&s->nr)) { report("state", "NR 小区锁查询异常，未写入"); return -1; }
+            sent = nr_cells_set(NR_LOCK_PCI, job->arfcn, job->pci, job->mask, job->scs, 0, NULL, NULL); read_state(s);
+            return sent && s->nr.known && s->nr.type == NR_LOCK_PCI && s->nr.arfcn == (long)job->arfcn && s->nr.pci == (int)job->pci && s->nr.scs == SCS_KHZ[job->scs] && !memcmp(s->nr.bands, job->mask, 64);
+        case CMD_NR_LIST:
+            if (!nr_can_write(&s->nr)) { report("state", "NR 小区锁查询异常，未写入"); return -1; }
+            sent = nr_cells_set(NR_LOCK_ARFCN, 0, 0, NULL, 0, job->count, job->arfcns, job->params); read_state(s);
+            return sent && nr_list_is(job, &s->nr);
         case CMD_CELL_LTE:
             if (!s->lte.known) { report("state", "LTE 小区锁状态未知，未写入"); return -1; }
             sent = lte_cell_set(0, job->arfcn, job->pci);

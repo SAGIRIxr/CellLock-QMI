@@ -98,6 +98,10 @@ final class Ui {
     }
 
     AlertDialog dialog(String title, String subtitle, LinearLayout body, String action, Runnable apply, String cancel) {
+        return dialog(title,subtitle,body,action,apply,cancel,null,null);
+    }
+
+    AlertDialog dialog(String title,String subtitle,LinearLayout body,String action,Runnable apply,String cancel,String direct,Runnable runDirect) {
         int maxHeight=Math.round(context.getResources().getDisplayMetrics().heightPixels*.84f);
         LinearLayout content=new LinearLayout(context) {
             @Override protected void onMeasure(int width,int height) { super.onMeasure(width,View.MeasureSpec.makeMeasureSpec(Math.min(maxHeight,View.MeasureSpec.getSize(height)),View.MeasureSpec.AT_MOST)); }
@@ -106,10 +110,17 @@ final class Ui {
         TextView heading=text(title,21,INK);heading.setTypeface(null,Typeface.BOLD);content.addView(heading,fill(-2));
         if(subtitle!=null&&!subtitle.isEmpty()){gap(content,7);content.addView(caption(subtitle),fill(-2));}
         gap(content,18);ScrollView scroll=new ScrollView(context);scroll.setFillViewport(false);scroll.setClipToPadding(false);scroll.addView(body);content.addView(scroll,new LinearLayout.LayoutParams(-1,-2,1));
-        gap(content,18);LinearLayout footer=row();content.addView(footer,fill(-2));
+        gap(content,18);LinearLayout footer=direct==null?row():column();content.addView(footer,fill(-2));
         AlertDialog dialog=new AlertDialog.Builder(context).setView(content).create();
-        if(cancel!=null){Button back=button(cancel,false);back.setMinHeight(dp(48));back.setPadding(dp(12),dp(10),dp(12),dp(10));back.setOnClickListener(v->dialog.dismiss());footer.addView(back,weight(-2));gap(footer,10);}
-        Button primary=button(action,true);primary.setMinHeight(dp(48));primary.setPadding(dp(12),dp(10),dp(12),dp(10));primary.setOnClickListener(v->{dialog.dismiss();if(apply!=null)apply.run();});footer.addView(primary,weight(-2));
+        Button primary=button(action,true);primary.setMinHeight(dp(48));primary.setPadding(dp(12),dp(10),dp(12),dp(10));primary.setOnClickListener(v->{dialog.dismiss();if(apply!=null)apply.run();});
+        if(direct==null){
+            if(cancel!=null){Button back=button(cancel,false);back.setMinHeight(dp(48));back.setOnClickListener(v->dialog.dismiss());footer.addView(back,weight(-2));gap(footer,10);}
+            footer.addView(primary,weight(-2));
+        }else{
+            footer.addView(primary,fill(-2));gap(footer,10);LinearLayout alternatives=row();
+            Button back=button(cancel==null?"返回":cancel,false);back.setMinHeight(dp(48));back.setOnClickListener(v->dialog.dismiss());alternatives.addView(back,weight(-2));gap(alternatives,10);
+            Button proceed=button(direct,false);proceed.setMinHeight(dp(48));proceed.setOnClickListener(v->{dialog.dismiss();if(runDirect!=null)runDirect.run();});alternatives.addView(proceed,weight(-2));footer.addView(alternatives,fill(-2));
+        }
         dialog.setOnShowListener(ignored->{
             android.view.Window window=dialog.getWindow();if(window==null)return;
             window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));window.getDecorView().setPadding(0,0,0,0);
@@ -119,9 +130,15 @@ final class Ui {
     }
 
     LinearLayout choice(LinearLayout parent,String title,String description,Runnable action) {
+        return choice(parent,title,description,null,action);
+    }
+
+    LinearLayout choice(LinearLayout parent,String title,String description,String time,Runnable action) {
         LinearLayout choice=row();choice.setPadding(dp(15),dp(16),dp(15),dp(16));choice.setBackground(ripple(SOFT_GREEN,16));
-        LinearLayout labels=column();TextView name=text(title,16,INK);name.setTypeface(null,Typeface.BOLD);labels.addView(name);gap(labels,6);labels.addView(caption(description));choice.addView(labels,weight(-2));gap(choice,10);choice.addView(text("›",24,GREEN));
-        choice.setOnClickListener(v->action.run());choice.setFocusable(true);choice.setContentDescription(title+"，"+description);parent.addView(choice,fill(-2));return choice;
+        LinearLayout labels=column();TextView name=text(title,16,INK);name.setTypeface(null,Typeface.BOLD);labels.addView(name);gap(labels,6);labels.addView(caption(description));
+        if(time!=null){gap(labels,6);labels.addView(text(time,11,HINT));}
+        choice.addView(labels,weight(-2));gap(choice,10);choice.addView(text("›",24,GREEN));
+        choice.setOnClickListener(v->action.run());choice.setFocusable(true);choice.setContentDescription(title+"，"+description+(time==null?"":"，"+time));parent.addView(choice,fill(-2));return choice;
     }
 
     // ---------- 文字 ----------
@@ -188,6 +205,16 @@ final class Ui {
 
     Button dangerButton(String label) {
         return button(label, RED, SOFT_RED);
+    }
+
+    Button textButton(String label) {
+        return button(label, GREEN, Color.TRANSPARENT);
+    }
+
+    Button outlineButton(String label) {
+        Button b=button(label,GREEN,CARD);
+        b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x16177557),shape(CARD,14,GREEN),shape(CARD,14,0)));
+        return b;
     }
 
     private Button button(String label, int textColor, int background) {

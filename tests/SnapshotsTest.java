@@ -47,6 +47,60 @@ public final class SnapshotsTest {
 
     private static ModemState state() throws Exception { return ModemState.parse(stateJson()); }
 
+    private static void testSaveAndSelection() throws Exception {
+        java.util.Map<String,String> stored=new java.util.HashMap<>();boolean[] writable={true};
+        android.content.SharedPreferences prefs=(android.content.SharedPreferences)java.lang.reflect.Proxy.newProxyInstance(
+                SnapshotsTest.class.getClassLoader(),new Class<?>[]{android.content.SharedPreferences.class},(proxy,method,args)->{
+                    if(method.getName().equals("contains"))return stored.containsKey(args[0]);
+                    if(method.getName().equals("getString"))return stored.getOrDefault(args[0],(String)args[1]);
+                    if(method.getName().equals("edit")){
+                        java.util.Map<String,String> pending=new java.util.HashMap<>();
+                        return java.lang.reflect.Proxy.newProxyInstance(SnapshotsTest.class.getClassLoader(),new Class<?>[]{android.content.SharedPreferences.Editor.class},(editor,edit,values)->{
+                            if(edit.getName().equals("putString")){pending.put((String)values[0],(String)values[1]);return editor;}
+                            if(edit.getName().equals("commit")){if(writable[0])stored.putAll(pending);return writable[0];}
+                            throw new AssertionError("unexpected editor call "+edit.getName());
+                        });
+                    }
+                    throw new AssertionError("unexpected preferences call "+method.getName());
+                });
+        ModemState original=state();Snapshots.rememberIfFirst(prefs,0,10,original);
+        JSONObject first=Snapshots.load(prefs,0,10);String firstId=first.optString("id");
+        check(Snapshots.matches(first,original)&&!firstId.isEmpty(),"first complete read saves identifiable snapshot");
+        ModemState changed=state();changed.lte.clear(1);Snapshots.rememberIfFirst(prefs,0,10,changed);
+        check(Snapshots.matches(Snapshots.load(prefs,0,10),original),"refresh does not overwrite saved configuration");
+        check(Snapshots.save(prefs,0,10,changed," n78 测试 ")&&Snapshots.matches(Snapshots.load(prefs,0,10),changed),"manual save adds newest selected SIM snapshot");
+        String changedId=Snapshots.load(prefs,0,10).optString("id");
+        check(Snapshots.list(prefs,0,10).size()==2&&!changedId.equals(firstId)&&Snapshots.matches(Snapshots.find(prefs,0,10,firstId),original),"saving retains older snapshot with stable distinct identity");
+        check(Snapshots.load(prefs,0,10).optString("note").equals("n78 测试"),"new snapshot stores trimmed note");
+        long savedTime=first.optLong("time");
+        check(Snapshots.updateNote(prefs,0,10,firstId,"日常配置")&&Snapshots.find(prefs,0,10,firstId).optString("note").equals("日常配置"),"older snapshot note can be edited");
+        check(Snapshots.matches(Snapshots.find(prefs,0,10,firstId),original)&&Snapshots.find(prefs,0,10,firstId).optLong("time")==savedTime&&Snapshots.load(prefs,0,10).optString("id").equals(changedId),"note edit preserves configuration time and order");
+        check(Snapshots.save(prefs,1,20,original,"另一张卡")&&Snapshots.list(prefs,0,10).size()==2,"saving another SIM is isolated");
+        check(!Snapshots.updateNote(prefs,1,20,firstId,"串卡")&&!Snapshots.delete(prefs,1,20,firstId),"note and delete cannot target another SIM");
+        check(!Snapshots.save(prefs,0,10,new ModemState(),"")&&Snapshots.list(prefs,0,10).size()==2,"incomplete read leaves snapshots intact");
+        writable[0]=false;check(!Snapshots.save(prefs,0,10,original,"")&&!Snapshots.updateNote(prefs,0,10,firstId,"失败")&&!Snapshots.delete(prefs,0,10,firstId),"storage failures are not reported as saved or deleted");writable[0]=true;
+        check(!Snapshots.save(prefs,2,10,original,"")&&!Snapshots.save(prefs,0,-1,original,""),"invalid SIM mapping cannot be saved");
+        check(!Snapshots.save(prefs,0,10,original,"x".repeat(Snapshots.MAX_NOTE_LENGTH+1))&&!Snapshots.updateNote(prefs,0,10,firstId,"x".repeat(Snapshots.MAX_NOTE_LENGTH+1)),"overlong notes are rejected without changing saved data");
+        check(Snapshots.delete(prefs,0,10,changedId)&&Snapshots.matches(Snapshots.load(prefs,0,10),original)&&Snapshots.list(prefs,0,10).size()==1,"delete removes only selected snapshot");
+        check(!Snapshots.delete(prefs,0,10,changedId)&&!Snapshots.updateNote(prefs,0,10,changedId,"已删除"),"stale snapshot identity cannot change another entry");
+        check(Snapshots.delete(prefs,0,10,firstId)&&Snapshots.load(prefs,0,10)==null,"last snapshot can be deleted");
+        Snapshots.rememberIfFirst(prefs,0,10,original);check(Snapshots.list(prefs,0,10).isEmpty(),"refresh does not recreate deleted snapshots");
+        check(Snapshots.save(prefs,0,10,changed,"")&&Snapshots.list(prefs,0,10).size()==1,"manual saving after deleting all still works");
+        stored.put("snapshot_0_30",snapshot().put("time",42).toString());
+        check(Snapshots.list(prefs,0,30).size()==1&&Snapshots.load(prefs,0,30).optString("id").equals("legacy"),"legacy single configuration appears as one stable snapshot");
+        check(Snapshots.updateNote(prefs,0,30,"legacy","旧配置")&&Snapshots.save(prefs,0,30,changed,"新配置")&&Snapshots.list(prefs,0,30).size()==2,"legacy snapshot can be annotated and retained alongside new saves");
+        check(Snapshots.matches(Snapshots.find(prefs,0,30,"legacy"),original)&&Snapshots.find(prefs,0,30,"legacy").optLong("time")==42,"migration preserves complete original masks and timestamp");
+        stored.put("snapshot_0_40","broken data");
+        check(!Snapshots.save(prefs,0,40,original,"")&&!Snapshots.delete(prefs,0,40,"legacy")&&stored.get("snapshot_0_40").equals("broken data"),"corrupt stored data is not silently overwritten");
+        BitSet hardware=new BitSet();hardware.set(28);hardware.set(78);BitSet locked=new BitSet();locked.set(78);
+        check(ModemState.bandSelection(hardware,hardware).isEmpty(),"all hardware bands open starts unselected");
+        check(ModemState.bandSelection(locked,hardware).equals(locked),"n78 restriction starts selected");
+        locked.set(500);check(ModemState.bandSelection(locked,hardware).cardinality()==1&&locked.get(500),"selection intersects hardware without modifying modem state");
+        check(ModemState.bandSelection(null,hardware).isEmpty()&&ModemState.bandSelection(locked,null).isEmpty(),"unknown state does not invent selections");
+        OperationReport saved=new OperationReport("保存配置","SIM 1");saved.items.add(new ResultItem("保存配置","saved","本地保存"));
+        check(saved.ok()&&saved.outcome().equals("已保存")&&saved.items.get(0).label().equals("已保存"),"local save is distinguished from modem readback");
+    }
+
     private static void command(List<String[]> commands, int index, String... expected) {
         check(index < commands.size() && Arrays.equals(commands.get(index), expected),
                 "command " + index + " must be " + Arrays.toString(expected));
@@ -120,15 +174,14 @@ public final class SnapshotsTest {
 
     private static void testRestoreCommands() throws Exception {
         List<String[]> commands = Snapshots.restoreCommands(snapshot(), 1);
-        check(commands.size() == 8, "different SA and NSA produce eight explicit restore steps");
+        check(commands.size() == 6, "different SA and NSA produce six explicit restore steps");
         command(commands, 0, "restore-lte", "1", "1,2,3,250");
         command(commands, 1, "restore-nr", "1", "sa", "1,41,78,257");
         command(commands, 2, "restore-nr", "1", "nsa", "1,78");
         command(commands, 3, "restore-legacy", "1", "0000abcd12345678");
         command(commands, 4, "nr-mode", "1", "both");
         command(commands, 5, "rat", "1", "gsm,wcdma,lte");
-        command(commands, 6, "cell-clear", "1", "lte");
-        command(commands, 7, "cell-clear", "1", "nr");
+        check(commands.stream().noneMatch(c -> c[0].equals("cell-clear")),"old snapshots never clear unknown locks");
         for (String[] command : commands) {
             check(command.length >= 3 && "1".equals(command[1]), "every command keeps the requested slot");
             check(!"reset".equals(command[0]), "initial restore never becomes reset");
@@ -137,7 +190,7 @@ public final class SnapshotsTest {
         }
         JSONObject equal = snapshot().put("nrNsa", "1,41,78,257");
         commands = Snapshots.restoreCommands(equal, 0);
-        check(commands.size() == 7, "identical NR settings can use one both command");
+        check(commands.size() == 5, "identical NR settings can use one both command");
         command(commands, 1, "restore-nr", "0", "both", "1,41,78,257");
         for (int mode = 0; mode < 3; mode++) {
             commands = Snapshots.restoreCommands(snapshot().put("nrMode", mode), 0);
@@ -205,11 +258,12 @@ public final class SnapshotsTest {
     }
 
     public static void main(String[] args) throws Exception {
+        testSaveAndSelection();
         testSnapshotValidation();
         testExactMatches();
         testRestoreCommands();
         testModemParsing();
-        OperationReport operation=new OperationReport("恢复初始配置","SIM 1");
+        OperationReport operation=new OperationReport("读取配置","SIM 1");
         operation.add("LTE",ModemResult.parse(new JSONObject().put("ok",true).put("stage","verified").put("mutated",false)));
         operation.add("5G 小区锁",ModemResult.parse(new JSONObject().put("ok",false).put("stage","unknown").put("message","请求已接受，锁状态无法确认")));
         check(!operation.ok()&&operation.outcome().equals("部分完成"),"unknown lock preserves successful settings");
@@ -225,8 +279,8 @@ public final class SnapshotsTest {
         LogRecord record=new LogRecord("12:00:00","SIM 1 · 恢复",operation);
         check(LogRecord.decode(record.encode()).display().equals(record.display()),"logs preserve time, target, status and details");
         check(LogRecord.decode("旧日志").text.equals("旧日志"),"previous saved logs remain readable");
-        operation.restoreStatus="matched";check(operation.dialogTitle().startsWith("配置已恢复")&&OperationReport.decode(operation.encode()).restoreStatus.equals("matched"),"confirmed configuration is distinguished from unlock failure");
-        operation.restoreStatus="mismatch";check(operation.dialogTitle().equals("尚未完整恢复初始配置"),"explicit restore mismatch has a specific conclusion");
+        operation.restoreStatus="matched";check(operation.dialogTitle().startsWith("配置已应用")&&OperationReport.decode(operation.encode()).restoreStatus.equals("matched"),"confirmed configuration is distinguished from unlock failure");
+        operation.restoreStatus="mismatch";check(operation.dialogTitle().equals("尚未完整应用保存的配置"),"explicit restore mismatch has a specific conclusion");
         check(!ModemResult.parse(new JSONObject().put("nrCombinedOnly",true).put("ok",false)).nrCombinedOnly,"accepted combined write without verification does not establish capability");
         check(ModemResult.parse(new JSONObject().put("nrCombinedOnly",true).put("steps",new JSONArray().put(new JSONObject().put("name","nr").put("status","verified")))).nrCombinedOnly,"verified NR reset step can establish capability even when unlock fails");
         JSONObject report = new JSONObject().put("success", failures.isEmpty()).put("checks", checks)
