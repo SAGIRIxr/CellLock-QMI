@@ -21,8 +21,8 @@ final class LockPage extends ScrollView {
     interface Host {
         void onRefresh();
         void onApply(String title, String summary, List<String[]> commands);
-        default void onSavedCells() {}
         void onMessage(String title, String message);
+        default void onSavedCells() {}
     }
 
     private static final int LTE=0, NR_BOTH=1, NR_SA=2, NR_NSA=3, GSM=4, WCDMA=5;
@@ -99,7 +99,7 @@ final class LockPage extends ScrollView {
         nrArfcn.addTextChangedListener(watcher(()->suggestNrParameters()));
         nrBand.addTextChangedListener(watcher(()->{if(changingFields)return;int band=InputValidator.parse(value(nrBand),512);if(band>0)selectScs(Bands.defaultScs(band));}));
         ui.gap(parent,9);cellApply=ui.button("锁定",true);cellApply.setOnClickListener(v->applyCell());controls.add(cellApply);parent.addView(cellApply,ui.fill(52));ui.gap(parent,9);
-        cellClear=ui.button("清除解锁",false);cellClear.setOnClickListener(v->{if(!busy){boolean nr=cellTabs.selected()==0;apply("解除小区锁定","解除当前 SIM 的 "+(nr?"5G":"LTE")+" 小区与频点锁定。",new String[]{"cell-clear",nr?"nr":"lte"});}});controls.add(cellClear);parent.addView(cellClear,ui.fill(47));
+        cellClear=ui.button("清除解锁",false);cellClear.setOnClickListener(v->{if(!busy){boolean nr=cellTabs.selected()==0;apply(nr?"清除 5G 小区/频点锁":"清除 LTE 小区锁","只清除所选小区/频点锁；保留频段、网络制式和 5G 组网。",new String[]{"cell-clear",nr?"nr":"lte"});}});controls.add(cellClear);parent.addView(cellClear,ui.fill(47));
     }
 
     private void buildBands(LinearLayout parent) {
@@ -134,7 +134,7 @@ final class LockPage extends ScrollView {
             initializeBandDrafts();
             if(!nrModeEdited)chosenNrMode=next.prefKnown?next.nrMode:-1;
         }
-        stateCaption.setText(next==null?"读取当前 SIM 的设置后再选择。":!next.hasCellData()?"状态暂不可读，可刷新重试或恢复设置。":"写入结果以基带回读为准。");
+        stateCaption.setText(next==null?"读取当前 SIM 的设置后再选择。":!next.hasCellData()?"暂时无法读取状态，可刷新重试或读取已保存配置。":"设置后会重新读取，确认是否生效。");
         renderBandChoices();renderRatChoices();updateCellUi();updateEnabled();
     }
 
@@ -149,11 +149,11 @@ final class LockPage extends ScrollView {
     void fillTarget(RadioCell cell) {
         if(busy||cell==null||!cell.hasTarget(serving))return;
         sectionTabs.select(2);cellTabs.select(cell.nr?0:1);changingFields=true;
-        if(cell.nr){nrKindTabs.select(0);nrArfcn.setText(String.valueOf(cell.arfcn));nrPci.setText(String.valueOf(cell.pci));int band=cell.targetBand(serving);nrBand.setText(band>0?String.valueOf(band):"");if(band>0)selectScs(Bands.defaultScs(band));nrHint.setText(band>0?"已带入 n"+band+"，子载波间隔仍可调整。":"候选 "+Bands.nrCandidateLabel(cell.arfcn)+"，请确认频段与子载波间隔。");}
+        if(cell.nr){nrKindTabs.select(0);nrArfcn.setText(String.valueOf(cell.arfcn));nrPci.setText(String.valueOf(cell.pci));int band=cell.targetBand(serving);nrBand.setText(band>0?String.valueOf(band):"");if(band>0)selectScs(Bands.defaultScs(band));nrHint.setText(band>0?"已填入 n"+band+"，请核对 SCS（子载波间隔）。":"候选 "+Bands.nrCandidateLabel(cell.arfcn)+"，请确认频段与 SCS（子载波间隔）。");}
         else{lteArfcn.setText(String.valueOf(cell.arfcn));ltePci.setText(String.valueOf(cell.pci));}
-        if(cell.nr&&!cell.mapped&&cell.targetBand(serving)>0)nrHint.setText("已填入所选 SIM 的同频候选，请确认频段与子载波间隔。");
+        if(cell.nr&&!cell.mapped&&cell.targetBand(serving)>0)nrHint.setText("已填入当前 SIM 的同频候选小区，请确认频段与 SCS（子载波间隔）。");
         // shortcut: QMI SCS 尚未验证与锁定命令的对应关系，实测锁定通过后再自动带入。
-        if(cell.nr&&cell.details.containsKey("SCS"))nrHint.append(" 基带间隔 "+cell.details.get("SCS")+"；当前填写值请核对。");
+        if(cell.nr&&cell.details.containsKey("SCS"))nrHint.append(" 当前读到的 SCS 为 "+cell.details.get("SCS")+"，请与填写值核对。");
         changingFields=false;showSection();updateCellUi();smoothScrollTo(0,0);
     }
 
@@ -169,16 +169,13 @@ final class LockPage extends ScrollView {
     void resetForSubscription() {
         state=null;serving=null;ratArg=null;chosenRat=-1;chosenNrMode=-1;ratEdited=false;nrModeEdited=false;
         for(int i=0;i<bandDrafts.length;i++){bandDrafts[i]=null;bandEdited[i]=false;}
-        changingFields=true;for(EditText input:new EditText[]{lteArfcn,ltePci,nrArfcn,nrPci,nrBand})input.setText("");scs.setSelection(1);changingFields=false;nrHint.setText("输入频点后建议频段与间隔，可手动调整。");
+        changingFields=true;for(EditText input:new EditText[]{lteArfcn,ltePci,nrArfcn,nrPci,nrBand})input.setText("");scs.setSelection(1);changingFields=false;nrHint.setText("SCS 为子载波间隔。输入频点后会建议频段与 SCS，可手动调整。");
         nrTargetTabs.select(0);setState(null);
     }
 
     private void initializeBandDrafts() {
-        if(state==null||!state.prefKnown||!state.hwKnown)return;
         for(int group=0;group<bandDrafts.length;group++){
-            if(bandEdited[group])continue;BitSet current=currentBands(group),hardware=hardwareBands(group);
-            if(current==null||hardware==null){bandDrafts[group]=null;continue;}
-            BitSet selected=(BitSet)current.clone();selected.and(hardware);bandDrafts[group]=selected;
+            if(!bandEdited[group])bandDrafts[group]=ModemState.bandSelection(currentBands(group),hardwareBands(group));
         }
     }
 
@@ -213,8 +210,8 @@ final class LockPage extends ScrollView {
             bandChoices.addView(flow,ui.fill(-2));
         }
         if(!any)bandChoices.addView(ui.caption("硬件未提供此制式的可选频段。"));
-        boolean different=nr&&nrTargetTabs.selected()==0&&state.nrSa!=null&&state.nrNsa!=null&&!state.nrSa.equals(state.nrNsa);
-        bandHint.setText(nr&&nrCombinedOnly?"SA＋NSA 同步设置：本机不支持独立设置 SA 或 NSA 频段。":different?"SA 与 NSA 当前不同；初始勾选两者共有频段。":"只列本机支持的频段；小字为频率提示。");updateBandCount();updateEnabled();
+        boolean different=nr&&nrTargetTabs.selected()==0&&state.prefKnown&&state.nrSa!=null&&state.nrNsa!=null&&!state.nrSa.equals(state.nrNsa);
+        bandHint.setText(nr&&nrCombinedOnly?"SA＋NSA 同步设置：本机不支持独立设置 SA 或 NSA 频段。":different?"SA 与 NSA 当前不同；默认显示共有的受限频段，可分别切换查看。":"未限制频段时默认不选；已限制时勾选对应频段。");updateBandCount();updateEnabled();
     }
 
     private void updateBandCount() {int chosen=0,total=0;for(int group:visibleGroups()){BitSet hw=hardwareBands(group);if(hw!=null){total+=hw.cardinality();if(bandDrafts[group]!=null){BitSet selected=(BitSet)bandDrafts[group].clone();selected.and(hw);chosen+=selected.cardinality();}}}bandCount.setText(total==0?"":"已选 "+chosen+" / "+total);}
@@ -289,15 +286,15 @@ final class LockPage extends ScrollView {
         if(changingFields)return;int arfcn=InputValidator.parse(value(nrArfcn),InputValidator.MAX_NR_ARFCN);if(arfcn<0)return;
         int band=Bands.uniqueNrBand(arfcn);changingFields=true;nrBand.setText(band>0?String.valueOf(band):"");if(band>0)selectScs(Bands.defaultScs(band));changingFields=false;
         String candidates=Bands.nrCandidateLabel(arfcn);
-        nrHint.setText(band>0?"建议 n"+band+" · "+Bands.defaultScs(band)+" kHz，可调整。":candidates.isEmpty()?"未识别频段，请手动确认频段与间隔。":"候选 "+candidates+"，请手动确认频段与间隔。");
+        nrHint.setText(band>0?"建议 n"+band+" · SCS "+Bands.defaultScs(band)+" kHz，可调整。":candidates.isEmpty()?"未识别频段，请手动确认频段与 SCS（子载波间隔）。":"候选 "+candidates+"，请手动确认频段与 SCS（子载波间隔）。");
     }
     private void selectScs(int value){for(int i=0;i<SCS.length;i++)if(SCS[i]==value){scs.setSelection(i);return;}}
 
     private void showSection(){for(int i=0;i<sections.length;i++)sections[i].setVisibility(sectionTabs.selected()==i?VISIBLE:GONE);updateEnabled();}
     private void updateCellUi() {
         boolean nr=cellTabs.selected()==0,freq=nrKindTabs.selected()==1;lteFields.setVisibility(nr?GONE:VISIBLE);nrFields.setVisibility(nr?VISIBLE:GONE);pciColumn.setVisibility(freq?GONE:VISIBLE);nrBandColumn.setVisibility(freq?GONE:VISIBLE);
-        cellClear.setText(nr?"解除 5G 小区锁":"解除 LTE 小区锁");
-        nrUnknownHint.setVisibility(nr&&state!=null&&!state.nrKnown?VISIBLE:GONE);nrUnknownHint.setText("5G 小区状态未完整返回，写入后会尝试回读确认。");updateEnabled();
+        cellClear.setText(nr?"清除 5G 小区/频点锁":"清除 LTE 小区锁");
+        nrUnknownHint.setVisibility(nr&&state!=null&&!state.nrKnown?VISIBLE:GONE);nrUnknownHint.setText("暂未读到完整的 5G 锁定状态，设置后会再次读取核对。");updateEnabled();
     }
     private void updateEnabled() {
         if(cellApply==null||bandApply==null||ratApply==null)return;

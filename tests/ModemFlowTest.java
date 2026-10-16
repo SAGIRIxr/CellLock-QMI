@@ -102,7 +102,7 @@ public final class ModemFlowTest extends Instrumentation {
                 List<View> chips=field(locks,"bandChips");TextView target=(TextView)chips.stream().filter(v->v instanceof TextView&&((TextView)v).getText().toString().startsWith("n"+probeBand+"\n")).findFirst().orElseThrow();target.performClick();
                 ModemFlowTest.this.<Button>field(locks,"bandApply").performClick();
             });
-            capture("band-confirm");button("确认应用");waitComplete();
+            capture("band-confirm");button("应用频段");waitComplete();
             check(report().ok()&&state().nrSa.cardinality()==1&&state().nrSa.get(probeBand)&&state().nrSa.equals(state().nrNsa),"App band apply not verified for both modes");capture("band-result");button("知道了");
             check(!(boolean)call(session,"nrCombinedOnly",new Class<?>[]{int.class},sub),"independent NR writes incorrectly classified as combined only");
             main(()->{Ui.Segmented target=field(locks,"nrTargetTabs");check(target.getChildAt(1).isEnabled()&&target.getChildAt(2).isEnabled(),"independent controls disabled despite successful independent writes");});capture("bands-independent");
@@ -113,9 +113,13 @@ public final class ModemFlowTest extends Instrumentation {
             check(report().outcome().equals("部分完成")&&report().items.stream().anyMatch(i->i.name.equals("快照已知配置核对")&&i.confirmed()),"restored configuration not distinguished from skipped unknown NR lock");capture("restore-result");button("知道了");
             for(boolean nr:new boolean[]{false,true}){
                 main(()->{Ui.Segmented cell=field(locks,"cellTabs");cell.select(nr?0:1);invoke(locks,"updateCellUi",new Class<?>[0]);ModemFlowTest.this.<Button>field(locks,"cellClear").performClick();});
-                button("确认应用");waitComplete();OperationReport result=report();
+                button("直接清除");waitComplete();OperationReport result=report();
                 check(nr?result.items.get(0).status.equals("rejected"):result.items.get(0).status.equals("unchanged"),"incorrect unlock result for "+(nr?"NR":"LTE"));capture(nr?"unlock-rejected":"unlock-noop");button("知道了");
             }
+            int beforeRat=state().rat,beforeMode=state().nrMode;String beforeLteLock=state().lteCellSummary(),beforeNrLock=state().nrCellSummary();
+            choose(true);button("直接开放");waitComplete();
+            check(includes(state().lte,state().hwLte)&&includes(state().nrSa,state().hwNr)&&includes(state().nrNsa,state().hwNr),"opening allows all supported bands; already open raw defaults can remain wider");
+            check(state().rat==beforeRat&&state().nrMode==beforeMode&&state().lteCellSummary().equals(beforeLteLock)&&state().nrCellSummary().equals(beforeNrLock),"band opening preserves RAT, NR mode and cell locks");capture("open-bands-result");button("知道了");
             page(2);DevicePage device=field(activity,"device");main(()->ModemFlowTest.this.<Button>field(device,"logsButton").performClick());
             main(()->{ScrollView scroll=field(activity,"dialogScrollView");scroll.fullScroll(View.FOCUS_DOWN);});capture("logs");
             main(()->{List<TextView> buttons=texts(dialog().getWindow().getDecorView()).stream().filter(t->t instanceof Button&&t.getText().toString().equals("展开查看详情")).collect(java.util.stream.Collectors.toList());check(!buttons.isEmpty(),"operation log details missing");buttons.get(buttons.size()-1).performClick();ScrollView scroll=field(activity,"dialogScrollView");scroll.fullScroll(View.FOCUS_DOWN);});capture("logs-expanded");button("知道了");

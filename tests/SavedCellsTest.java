@@ -45,6 +45,13 @@ public final class SavedCellsTest {
         check(SavedCells.save(prefs,0,10,cell().put("arfcn",Integer.MAX_VALUE).put("pci",Integer.MAX_VALUE).put("band",0).put("scs",0),"不完整"),"不完整参数可保存，表单补齐");
         check(!SavedCells.valid(cell().put("arfcn","633984;id"))&&!SavedCells.valid(cell().put("nr","true"))&&!SavedCells.valid(cell().put("scs",25)),"malformed stored targets rejected");
         ModemState state=new ModemState();state.prefKnown=state.hwKnown=true;state.rat=Rat.LTE|Rat.NR;state.nrMode=0;state.lte=bits(3,250);state.nrSa=bits(28,257);state.nrNsa=bits(28,257);state.hwLte=bits(3);state.hwNr=bits(28,78);state.hwGsm=bits(850);state.hwWcdma=bits(1);
+        String[] target={"cell-nr","633984","202","78","30"};
+        check(LockPlan.excluded(state,target),"D1 excluded target detected");List<String[]> append=LockPlan.append(state,target);
+        check(append.size()==1&&append.get(0)[1].equals("both")&&append.get(0)[2].equals("28,78,257"),"append union retains unsupported bits and combines equal masks");
+        check(state.nrSa.equals(bits(28,257)),"planning does not mutate readback");
+        state.nrSa.set(78);state.nrNsa.set(78);check(!LockPlan.excluded(state,target)&&LockPlan.append(state,target).isEmpty(),"same/allowed band never receives band write");
+        state.nrSa=null;check(!LockPlan.excluded(state,target),"unknown list is not treated as exclusion");boolean rejected=false;try{LockPlan.append(state,target);}catch(IllegalStateException e){rejected=true;}check(rejected,"accepted append stops if fresh list becomes unknown");
+        List<String[]> opened=LockPlan.openSupported(state);check(opened.size()==4&&opened.stream().allMatch(c->c[0].startsWith("band-")),"opening bands preserves RAT/NR mode and cell locks");
         state.readAttempted=true;state.prefKnown=false;JSONObject unknown=Snapshots.capture(state);check(Snapshots.valid(unknown)&&!Snapshots.canRestore(unknown),"unknown records are valid but never synthesized into restore commands");
         check(Snapshots.save(prefs,0,10,state,"未知标记")&&Snapshots.list(prefs,0,10).size()==1,"D3 permits explicit unknown snapshot");
         JSONObject nr=new JSONObject().put("known",true).put("type",0).put("arfcn",633984).put("pci",202).put("band",41).put("bands",new JSONArray().put(41).put(78).put(257)).put("scs",30);
@@ -64,7 +71,7 @@ public final class SavedCellsTest {
         JSONObject invalid=Snapshots.capture(locked);invalid.getJSONObject("nrCell").put("bands",new JSONArray().put(513));check(!Snapshots.valid(invalid),"invalid band mask does not fall back to first band");
         JSONArray tooMany=new JSONArray();for(int i=0;i<65;i++)tooMany.put(cells.getJSONObject(0));check(!ModemState.parse(new JSONObject().put("lteCell",new JSONObject().put("known",true).put("cells",tooMany))).lteKnown,"LTE length bounded");
         JSONArray evidence=new JSONArray();for(int i=0;i<8;i++)evidence.put(new JSONObject().put("index",i).put("presence","absent"));check(BandDefaults.allAbsent(new JSONObject().put("efs",evidence)),"all eight absent verified");evidence.getJSONObject(5).put("presence","unknown");check(!BandDefaults.allAbsent(new JSONObject().put("efs",evidence)),"unknown EFS never absence");
-        byte[] packet=BandDefaults.response(new JSONObject().put("responseHex","4b132700ffffffff020000000000"),39,14);check(BandDefaults.u32(packet,8)==2,"EFS errno position verified");boolean rejected=false;try{BandDefaults.response(new JSONObject().put("responseHex","4b13080000000000"),39,14);}catch(Exception e){rejected=true;}check(rejected,"EFS wrong command rejected");
+        byte[] packet=BandDefaults.response(new JSONObject().put("responseHex","4b132700ffffffff020000000000"),39,14);check(BandDefaults.u32(packet,8)==2,"EFS errno position verified");rejected=false;try{BandDefaults.response(new JSONObject().put("responseHex","4b13080000000000"),39,14);}catch(Exception e){rejected=true;}check(rejected,"EFS wrong command rejected");
         check(!SavedCells.valid(cell().put("arfcn",633984.5)),"fractional saved parameter rejected without truncation");
         check(!ModemState.parse(new JSONObject().put("nrCell",new JSONObject(nr.toString()).put("arfcn",633984.5))).nrKnown,"fractional lock readback cannot be confirmed");
         System.out.println("PASS: "+checks+" saved target / snapshot / operation checks (memory only)");

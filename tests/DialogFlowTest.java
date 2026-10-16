@@ -65,8 +65,8 @@ public final class DialogFlowTest extends Instrumentation {
             main(()->dialog().dismiss());
             List<String[]> commands=new ArrayList<>();commands.add(new String[]{"cell-clear","lte"});
             main(()->{try{call("confirmApply",new Class<?>[]{String.class,String.class,List.class,String.class},"解除 LTE 小区锁","解除所选 SIM 的 LTE 小区锁。",commands,null);}catch(Exception e){throw new AssertionError(e);}});
-            check(button("确认应用")!=null,"specific confirmation action missing");recreate();
-            main(()->{check(button("确认应用")!=null,"confirmation not restored");dialog().dismiss();});
+            check(button("备份并清除")!=null,"specific confirmation action missing");recreate();
+            main(()->{check(button("备份并清除")!=null,"confirmation not restored");dialog().dismiss();});
             OperationReport report=new OperationReport("弹窗验收示例","SIM 测试");
             report.items.add(new ResultItem("LTE 小区锁","unchanged","当前未锁定，无需解除"));
             report.items.add(new ResultItem("5G 小区锁","unknown","请求已接受，锁状态无法确认"));
