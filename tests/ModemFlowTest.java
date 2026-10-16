@@ -119,6 +119,7 @@ public final class ModemFlowTest extends Instrumentation {
                 if(phase.equals("manual")){main(()->invoke(activity,"readState",new Class<?>[]{boolean.class},true));waitComplete();check(!(boolean)call(session,"recoveryUnverified",new Class<?>[0]),"explicit refresh did not lift pending marker");}
                 check(state()!=null&&state().prefKnown&&state().hwKnown,"configuration read missing");
                 DevicePage hardware=field(activity,"device");TextView nr=field(hardware,"nrBands"),lte=field(hardware,"lteBands");
+                check(nr.getTop()<lte.getTop(),"NR hardware group is not above LTE");
                 if(phase.equals("diagnostic")){
                     page(0);CellsPage cells=field(activity,"cells");main(cells::refresh);
                     for(int i=0;i<400&&(boolean)field(cells,"reading");i++)SystemClock.sleep(100);
@@ -144,6 +145,7 @@ public final class ModemFlowTest extends Instrumentation {
                     }
                     int oldRat=state().rat,oldMode=state().nrMode;
                     page(1);View config=field(activity,"configurationEntry");
+                    check(config instanceof LineIcon&&"配置管理".contentEquals(config.getContentDescription()),"configuration icon/accessibility mismatch");
                     check(config.getHeight()>=new Ui(activity).dp(48),"configuration target too small");
                     main(config::performClick);selectChoice("清除全部锁定");selectChoice(route.equals("clear-complete")?"完整清除（重启基带）":"快速清除（不重启基带）");
                     check(buttonText("直接清除")!=null,"actual clear confirmation missing");

@@ -98,10 +98,10 @@ final class Ui {
     }
 
     AlertDialog dialog(String title, String subtitle, LinearLayout body, String action, Runnable apply, String cancel) {
-        return dialog(title,subtitle,body,action,apply,cancel,null,null);
+        return dialog(title,subtitle,body,action,apply,cancel,null,null,null);
     }
 
-    AlertDialog dialog(String title,String subtitle,LinearLayout body,String action,Runnable apply,String cancel,String direct,Runnable runDirect) {
+    AlertDialog dialog(String title,String subtitle,LinearLayout body,String action,Runnable apply,String cancel,String direct,Runnable runDirect,Runnable onBack) {
         int maxHeight=Math.round(context.getResources().getDisplayMetrics().heightPixels*.84f);
         LinearLayout content=new LinearLayout(context) {
             @Override protected void onMeasure(int width,int height) { super.onMeasure(width,View.MeasureSpec.makeMeasureSpec(Math.min(maxHeight,View.MeasureSpec.getSize(height)),View.MeasureSpec.AT_MOST)); }
@@ -112,13 +112,15 @@ final class Ui {
         gap(content,18);ScrollView scroll=new ScrollView(context);scroll.setFillViewport(false);scroll.setClipToPadding(false);scroll.addView(body);content.addView(scroll,new LinearLayout.LayoutParams(-1,-2,1));
         gap(content,18);LinearLayout footer=direct==null?row():column();content.addView(footer,fill(-2));
         AlertDialog dialog=new AlertDialog.Builder(context).setView(content).create();
-        Button primary=button(action,true);primary.setMinHeight(dp(48));primary.setPadding(dp(12),dp(10),dp(12),dp(10));primary.setOnClickListener(v->{dialog.dismiss();if(apply!=null)apply.run();});
+        dialog.setCanceledOnTouchOutside(true);
+        Runnable goBack=()->{if(onBack==null)dialog.dismiss();else onBack.run();};
+        Button primary=button(action,true);primary.setMinHeight(dp(48));primary.setPadding(dp(12),dp(10),dp(12),dp(10));primary.setOnClickListener(v->{if(apply==null)goBack.run();else{dialog.dismiss();apply.run();}});
         if(direct==null){
-            if(cancel!=null){Button back=button(cancel,false);back.setMinHeight(dp(48));back.setOnClickListener(v->dialog.dismiss());footer.addView(back,weight(-2));gap(footer,10);}
+            if(cancel!=null){Button back=button(cancel,false);back.setMinHeight(dp(48));back.setOnClickListener(v->goBack.run());footer.addView(back,weight(-2));gap(footer,10);}
             footer.addView(primary,weight(-2));
         }else{
             footer.addView(primary,fill(-2));gap(footer,10);LinearLayout alternatives=row();
-            Button back=button(cancel==null?"返回":cancel,false);back.setMinHeight(dp(48));back.setOnClickListener(v->dialog.dismiss());alternatives.addView(back,weight(-2));gap(alternatives,10);
+            Button back=button(cancel==null?"返回":cancel,false);back.setMinHeight(dp(48));back.setOnClickListener(v->goBack.run());alternatives.addView(back,weight(-2));gap(alternatives,10);
             Button proceed=button(direct,false);proceed.setMinHeight(dp(48));proceed.setOnClickListener(v->{dialog.dismiss();if(runDirect!=null)runDirect.run();});alternatives.addView(proceed,weight(-2));footer.addView(alternatives,fill(-2));
         }
         dialog.setOnShowListener(ignored->{

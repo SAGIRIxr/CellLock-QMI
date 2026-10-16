@@ -76,6 +76,7 @@ public final class MainActivity extends Activity {
     private boolean messageVisible;
     private AlertDialog messageDialog;
     private String dialogKind="message";
+    private Bundle dialogParent;
     private Task pendingTask;
     private ScrollView dialogScrollView;
     private int dialogScroll;
@@ -103,7 +104,7 @@ public final class MainActivity extends Activity {
         LinearLayout header=ui.column();header.setPadding(ui.dp(22),ui.dp(16),ui.dp(22),ui.dp(13));
         pageTitle=ui.text(TITLES[selectedPage],24,Ui.INK);pageTitle.setTypeface(null,Typeface.BOLD);LinearLayout titleRow=ui.row();titleRow.setMinimumHeight(ui.dp(48));titleRow.addView(pageTitle,ui.weight(-2));
         LineIcon bookmark=new LineIcon(this,LineIcon.BOOKMARK,Ui.INK);bookmark.setPadding(ui.dp(12),ui.dp(12),ui.dp(12),ui.dp(12));bookmark.setBackground(ui.ripple(android.graphics.Color.TRANSPARENT,24));bookmark.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);bookmark.setContentDescription("已保存小区");bookmark.setOnClickListener(v->chooseSavedCells());savedCellsEntry=bookmark;titleRow.addView(bookmark,new LinearLayout.LayoutParams(ui.dp(48),ui.dp(48)));
-        configurationEntry=ui.textButton("配置管理");configurationEntry.setOnClickListener(v->chooseRestore());titleRow.addView(configurationEntry,new LinearLayout.LayoutParams(-2,ui.dp(48)));header.addView(titleRow,ui.fill(-2));ui.gap(header,14);
+        LineIcon configuration=new LineIcon(this,LineIcon.ADJUST,Ui.INK);configuration.setPadding(ui.dp(12),ui.dp(12),ui.dp(12),ui.dp(12));configuration.setBackground(ui.ripple(android.graphics.Color.TRANSPARENT,24));configuration.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);configuration.setContentDescription("配置管理");configuration.setOnClickListener(v->chooseRestore());configurationEntry=configuration;titleRow.addView(configurationEntry,new LinearLayout.LayoutParams(ui.dp(48),ui.dp(48)));header.addView(titleRow,ui.fill(-2));ui.gap(header,14);
         LinearLayout sim=ui.row();sim.setPadding(ui.dp(12),0,ui.dp(7),0);sim.setBackground(ui.shape(Ui.CARD,14,0));sim.addView(new LineIcon(this,LineIcon.SIM,Ui.GREEN),new LinearLayout.LayoutParams(ui.dp(19),ui.dp(23)));ui.gap(sim,7);
         simSpinner=ui.spinner(new String[]{"授权后选择 SIM"});simSpinner.setContentDescription("选择操作的 SIM 卡");sim.addView(simSpinner,ui.weight(46));header.addView(sim,ui.fill(-2));root.addView(header);
         simSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){
@@ -205,7 +206,8 @@ public final class MainActivity extends Activity {
         final Task task=new Task(sub,slot,simName(sub),title,commands,restoreSnapshot);
         if(task.commands.isEmpty()){showMessage("没有可执行的设置","请重新选择参数。");return;}
         task.refreshAppendBand(SESSION.state(sub));
-        pendingTask=task;openDialog("confirm",title,summary);
+        Bundle parent=messageVisible?dialogState():null;
+        pendingTask=task;openDialog("confirm",title,summary,parent);
     }
 
     private void chooseRestore() {
@@ -244,8 +246,8 @@ public final class MainActivity extends Activity {
         if(!validConfigTask(task))return;
         List<String[]> commands=new ArrayList<>();
         if(choice==0){commands.add(new String[]{"save-config"});confirmApply("保存配置","重新读取当前 SIM 的设置，保存为一份配置快照。能读到的配置可恢复，读不到的项目会标记为未知，恢复时跳过。底层文件（EFS）的检查结果仅供参考，不会自动恢复。此操作不改变网络设置。",commands,null);return;}
-        if(choice==1){openDialog("snapshots","快照列表","");return;}
-        if(choice==2){openDialog("clear-choice","清除全部锁定","");return;}
+        if(choice==1){openChildDialog("snapshots","快照列表","");return;}
+        if(choice==2){openChildDialog("clear-choice","清除全部锁定","");return;}
         if(choice==4||choice==5){boolean complete=choice==5;commands.add(new String[]{complete?"clear-complete":"clear-quick"});confirmApply(complete?"完整清除":"快速清除",complete?
             "重载前解除所选 SIM 的 5G 组网限制，清理已覆盖的频段、小区/频点和制式持久限制并同步，随后重启基带一次。\n两张卡可能短时断网。安全发送退出后即结束，不等待恢复；恢复状态未核验。重载后允许基带或系统重新下发网络制式和组网，不自动补写。\n仅处理固定覆盖项，不保证未知厂商锁项已清除；快照不能完整还原被删除的持久项。":
             "开放硬件支持频段，再清除 LTE/5G 运行时小区及频点锁；保留网络制式和 5G 组网。\n不主动重启基带，不删除持久锁文件；持久限制可能仍存在。",commands,null);return;}
@@ -258,7 +260,7 @@ public final class MainActivity extends Activity {
         try{snapshot=Snapshots.find(prefs,task.slot,task.subscriptionId,selected.optString("id"));}
         catch(Exception error){showMessage("无法读取快照",message(error));return;}
         if(snapshot==null){showMessage("快照已不存在","请重新打开快照列表。");return;}
-        if(choice==1||choice==2){openDialog(choice==1?"snapshot-note":"snapshot-delete",choice==1?"编辑备注":"删除快照",snapshot.toString());return;}
+        if(choice==1||choice==2){openChildDialog(choice==1?"snapshot-note":"snapshot-delete",choice==1?"编辑备注":"删除快照",snapshot.toString());return;}
         if(!Snapshots.canRestore(snapshot)){showMessage("没有可自动恢复的项目",Snapshots.describe(snapshot));return;}
         List<String[]> commands=new ArrayList<>();for(String[] withSlot:Snapshots.restoreCommands(snapshot,task.slot)){String[] command=new String[withSlot.length-1];command[0]=withSlot[0];System.arraycopy(withSlot,2,command,1,withSlot.length-2);commands.add(command);}
         confirmApply("读取配置","仅应用快照中可恢复的已知配置，未知项跳过，小区锁按保存内容恢复。\n"+snapshotLabel(snapshot)+"\n"+Snapshots.describe(snapshot),commands,snapshot.toString());
@@ -339,10 +341,10 @@ public final class MainActivity extends Activity {
         Bundle out=new Bundle();out.putBoolean("main.messageVisible",messageVisible);out.putString("main.messageTitle",messageTitle);out.putString("main.messageBody",messageBody);
         out.putString("main.snapshotNote",snapshotNoteInput==null?snapshotNoteDraft:snapshotNoteInput.getText().toString());
         out.putString("main.dialogKind",dialogKind);out.putInt("main.dialogScroll",dialogScrollView==null?dialogScroll:dialogScrollView.getScrollY());out.putStringArrayList("main.expanded",new ArrayList<>(expandedDetails));if(pendingTask!=null)out.putBundle("main.pendingTask",pendingTask.save());
-        return out;
+        out.putBundle("main.dialogParent",dialogParent);return out;
     }
     private void restoreDialog(Bundle saved){
-        messageVisible=saved.getBoolean("main.messageVisible");messageTitle=saved.getString("main.messageTitle","");messageBody=saved.getString("main.messageBody","");dialogKind=saved.getString("main.dialogKind","message");dialogScroll=saved.getInt("main.dialogScroll");snapshotNoteDraft=saved.getString("main.snapshotNote","");expandedDetails.clear();ArrayList<String> expanded=saved.getStringArrayList("main.expanded");if(expanded!=null)expandedDetails.addAll(expanded);pendingTask=Task.restore(saved.getBundle("main.pendingTask"));
+        messageVisible=saved.getBoolean("main.messageVisible");messageTitle=saved.getString("main.messageTitle","");messageBody=saved.getString("main.messageBody","");dialogKind=saved.getString("main.dialogKind","message");dialogScroll=saved.getInt("main.dialogScroll");snapshotNoteDraft=saved.getString("main.snapshotNote","");expandedDetails.clear();ArrayList<String> expanded=saved.getStringArrayList("main.expanded");if(expanded!=null)expandedDetails.addAll(expanded);pendingTask=Task.restore(saved.getBundle("main.pendingTask"));dialogParent=saved.getBundle("main.dialogParent");
     }
     private void exportLogs() {
         if(SESSION.running())return;
@@ -354,7 +356,16 @@ public final class MainActivity extends Activity {
 
     private void showMessage(String title,String message){openDialog("message",title,message==null?"未返回说明":message);}
     private void openDialog(String kind,String title,String body) {
+        openDialog(kind,title,body,null);
+    }
+    private void openChildDialog(String kind,String title,String body){openDialog(kind,title,body,messageVisible?dialogState():null);}
+    private void backDialog(){
+        if(dialogParent==null){if(messageDialog!=null)messageDialog.dismiss();return;}
+        restoreDialog(dialogParent);renderDialog();
+    }
+    private void openDialog(String kind,String title,String body,Bundle parent) {
         if(isDestroyed()||isFinishing())return;
+        dialogParent=parent;
         dialogKind=kind;messageTitle=title;messageBody=body;messageVisible=true;dialogScroll=0;expandedDetails.clear();
         snapshotNoteDraft="";if(kind.equals("snapshot-note")||kind.equals("cell-note")||kind.equals("cell-save"))try{snapshotNoteDraft=new JSONObject(body).optString("note");}catch(Exception ignored){}
         if(!kind.equals("restore")&&!kind.equals("confirm")&&!kind.startsWith("snapshot")&&!kind.startsWith("cell")&&!kind.equals("clear-choice"))pendingTask=null;
@@ -382,15 +393,15 @@ public final class MainActivity extends Activity {
                 subtitle=task==null?"":task.target;
                 if(task!=null)try{List<JSONObject> records=SavedCells.list(prefs,task.slot,task.subscriptionId);
                     if(records.isEmpty())body.addView(ui.caption("长按当前服务小区卡片或周边小区条目，填写备注后保存。"));
-                    for(JSONObject record:records){LinearLayout row=ui.choice(body,record.optString("note").trim().isEmpty()?"保存小区":record.optString("note").trim(),SavedCells.describe(record),recordTime(record),()->openDialog("cell","保存小区详情",record.toString()));row.setPadding(ui.dp(14),ui.dp(12),ui.dp(14),ui.dp(12));row.setBackground(ui.ripple(Ui.BG,14));row.setOnLongClickListener(v->{openDialog("cell-note","编辑备注",record.toString());return true;});ui.gap(body,8);}
+                    for(JSONObject record:records){LinearLayout row=ui.choice(body,record.optString("note").trim().isEmpty()?"保存小区":record.optString("note").trim(),SavedCells.describe(record),recordTime(record),()->openChildDialog("cell","保存小区详情",record.toString()));row.setPadding(ui.dp(14),ui.dp(12),ui.dp(14),ui.dp(12));row.setBackground(ui.ripple(Ui.BG,14));row.setOnLongClickListener(v->{openChildDialog("cell-note","编辑备注",record.toString());return true;});ui.gap(body,8);}
                 }catch(Exception error){body.addView(ui.caption(message(error)));}action="关闭";break;
             case "cell":case "cell-save":case "cell-note":case "cell-delete":{
                 subtitle=task==null?"":task.target;
                 try{JSONObject record=new JSONObject(messageBody);recordHeading(body,record);body.addView(ui.caption(SavedCells.describe(record)));if(record.optBoolean("nr")&&record.optInt("scs")>0){ui.gap(body,6);body.addView(ui.caption("SCS "+record.optInt("scs")+" kHz"));}ui.gap(body,12);body.addView(ui.caption(cells.currentlyObserved(record)?"当前观测中发现参数匹配的小区，可供锁定前参考。":"当前未观测到该小区，你仍可填入参数尝试锁定。历史记录不能保证该小区当前可用。"));ui.gap(body,16);
                     if(dialogKind.equals("cell")){
                         ui.choice(body,"用作锁定目标","填入现有表单，由你核对后手动锁定；历史记录不保证仍在覆盖范围。",()->{if(validConfigTask(task)){locks.fillSaved(record);showPage(1);messageDialog.dismiss();}});ui.gap(body,12);
-                        ui.choice(body,"编辑备注","仅修改本地备注。",()->openDialog("cell-note","编辑备注",record.toString()));ui.gap(body,12);
-                        android.widget.Button delete=ui.dangerButton("删除小区");delete.setOnClickListener(v->openDialog("cell-delete","删除小区",record.toString()));body.addView(delete,ui.fill(48));action="关闭";
+                        ui.choice(body,"编辑备注","仅修改本地备注。",()->openChildDialog("cell-note","编辑备注",record.toString()));ui.gap(body,12);
+                        android.widget.Button delete=ui.dangerButton("删除小区");delete.setOnClickListener(v->openChildDialog("cell-delete","删除小区",record.toString()));body.addView(delete,ui.fill(48));action="关闭";
                     }else if(dialogKind.equals("cell-delete")){body.addView(ui.caption("确认删除这条保存小区？不改变当前锁定。"));action="确认删除";cancel="返回";apply=()->updateCell(task,record,null,false);}
                     else{EditText input=snapshotNote(body);boolean saving=dialogKind.equals("cell-save");action=saving?"保存小区":"保存备注";cancel="返回";apply=()->updateCell(task,record,input.getText().toString(),saving);}
                 }catch(Exception error){body.addView(ui.caption("保存小区无法读取，请重新打开列表。"));}break;
@@ -400,7 +411,7 @@ public final class MainActivity extends Activity {
                 if(task!=null)try{
                     List<JSONObject> snapshots=Snapshots.list(prefs,task.slot,task.subscriptionId);
                     if(snapshots.isEmpty())body.addView(ui.caption("暂无快照，请先保存配置。"));
-                    for(JSONObject snapshot:snapshots){ui.choice(body,snapshot.optString("note").trim().isEmpty()?"配置快照":snapshot.optString("note").trim(),Snapshots.describe(snapshot),recordTime(snapshot),()->openDialog("snapshot","快照详情",snapshot.toString()));ui.gap(body,12);}
+                    for(JSONObject snapshot:snapshots){ui.choice(body,snapshot.optString("note").trim().isEmpty()?"配置快照":snapshot.optString("note").trim(),Snapshots.describe(snapshot),recordTime(snapshot),()->openChildDialog("snapshot","快照详情",snapshot.toString()));ui.gap(body,12);}
                 }catch(Exception error){body.addView(ui.caption(message(error)));}
                 action="关闭";break;
             case "snapshot":case "snapshot-note":case "snapshot-delete":{
@@ -462,8 +473,9 @@ public final class MainActivity extends Activity {
                 break;
             default:body.addView(selectable(messageBody,13,Ui.INK));
         }
-        AlertDialog dialog=ui.dialog(messageTitle,subtitle,body,action,apply,cancel,direct,runDirect);messageDialog=dialog;
-        dialog.setOnDismissListener(ignored->{if(messageDialog==dialog){messageDialog=null;messageVisible=false;messageTitle="";messageBody="";pendingTask=null;dialogScrollView=null;snapshotNoteInput=null;expandedDetails.clear();}});
+        if(dialogParent!=null){if(cancel!=null)cancel="返回";else if(apply==null)action="返回";}
+        AlertDialog dialog=ui.dialog(messageTitle,subtitle,body,action,apply,cancel,direct,runDirect,this::backDialog);messageDialog=dialog;
+        dialog.setOnDismissListener(ignored->{if(messageDialog==dialog){messageDialog=null;messageVisible=false;messageTitle="";messageBody="";pendingTask=null;dialogParent=null;dialogScrollView=null;snapshotNoteInput=null;expandedDetails.clear();}});
         dialog.show();dialogScrollView=(ScrollView)body.getParent();dialogScrollView.post(()->{if(dialogScrollView!=null)dialogScrollView.scrollTo(0,dialogScroll);});
     }
     private TextView selectable(String value,int size,int color){TextView text=ui.text(value,size,color);text.setTextIsSelectable(true);return text;}

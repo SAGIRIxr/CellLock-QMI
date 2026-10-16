@@ -90,16 +90,16 @@ final class LockPage extends ScrollView {
         Button saved=ui.textButton("已保存小区 ›");saved.setTextSize(13);saved.setContentDescription("已保存小区");saved.setOnClickListener(v->{if(!busy)host.onSavedCells();});controls.add(saved);heading.addView(saved,new LinearLayout.LayoutParams(-2,ui.dp(48)));card.addView(heading,ui.fill(-2));ui.gap(card,8);
         lteFields=ui.column();LinearLayout lteRow=ui.row();lteArfcn=ui.labeledInput(lteRow,"EARFCN","0–65535");ui.gap(lteRow,12);ltePci=ui.labeledInput(lteRow,"PCI","0–503");lteFields.addView(lteRow);card.addView(lteFields);
         nrFields=ui.column();nrKindTabs=ui.new Segmented(new String[]{"锁小区 · PCI","锁频点 · ARFCN"},index->updateCellUi());controls.add(nrKindTabs);nrFields.addView(nrKindTabs,ui.fill(-2));ui.gap(nrFields,15);
-        LinearLayout nrTop=ui.row();nrArfcn=ui.labeledInput(nrTop,"NR-ARFCN","0–3279165");ui.gap(nrTop,12);nrPci=ui.labeledInput(nrTop,"PCI","0–1007");pciColumn=(LinearLayout)nrPci.getParent();nrFields.addView(nrTop);ui.gap(nrFields,15);
-        LinearLayout nrExtra=ui.row();nrBand=ui.labeledInput(nrExtra,"NR 频段","例如 78");nrBandColumn=(LinearLayout)nrBand.getParent();ui.gap(nrExtra,12);
-        LinearLayout spacing=ui.column();spacing.addView(ui.text("子载波间隔",12,Ui.MUTED));ui.gap(spacing,8);scs=ui.spinner(new String[]{"15 kHz","30 kHz","60 kHz","120 kHz","240 kHz"});scs.setSelection(1);scs.setBackground(ui.shape(Ui.BG,12,0));spacing.addView(scs,ui.fill(52));nrExtra.addView(spacing,ui.weight(-2));nrFields.addView(nrExtra);ui.gap(nrFields,10);
-        nrHint=ui.text("输入频点后建议频段与间隔，可手动调整。",11,Ui.MUTED);nrFields.addView(nrHint);card.addView(nrFields);
-        nrUnknownHint=ui.text("",11,Ui.AMBER);ui.gap(parent,10);parent.addView(nrUnknownHint);
+        LinearLayout nrTop=ui.row();nrArfcn=ui.labeledInput(nrTop,"NR-ARFCN","0–3279165");nrPci=ui.labeledInput(nrTop,"PCI","0–1007");pciColumn=(LinearLayout)nrPci.getParent();((LinearLayout.LayoutParams)pciColumn.getLayoutParams()).leftMargin=ui.dp(12);nrFields.addView(nrTop);ui.gap(nrFields,15);
+        LinearLayout nrExtra=ui.row();nrBand=ui.labeledInput(nrExtra,"NR Band","例如 78");nrBandColumn=(LinearLayout)nrBand.getParent();((LinearLayout.LayoutParams)nrBandColumn.getLayoutParams()).rightMargin=ui.dp(12);
+        LinearLayout spacing=ui.column();spacing.addView(ui.text("SCS",12,Ui.MUTED));ui.gap(spacing,8);scs=ui.spinner(new String[]{"15 kHz","30 kHz","60 kHz","120 kHz","240 kHz"});scs.setSelection(1);scs.setBackgroundTintList(null);scs.setBackground(ui.shape(Ui.BG,12,0));scs.setContentDescription("SCS（子载波间隔）");spacing.addView(scs,ui.fill(52));nrExtra.addView(spacing,ui.weight(-2));nrFields.addView(nrExtra);ui.gap(nrFields,10);
+        nrHint=ui.text("SCS 为子载波间隔。输入频点后会建议频段与 SCS，可手动调整。",11,Ui.MUTED);nrFields.addView(nrHint);card.addView(nrFields);
+        nrUnknownHint=ui.text("",11,Ui.AMBER);LinearLayout.LayoutParams notice=ui.fill(-2);notice.topMargin=ui.dp(10);parent.addView(nrUnknownHint,notice);
         for(EditText input:new EditText[]{lteArfcn,ltePci,nrArfcn,nrPci,nrBand}){input.setSaveEnabled(false);controls.add(input);}scs.setSaveEnabled(false);controls.add(scs);
         nrArfcn.addTextChangedListener(watcher(()->suggestNrParameters()));
         nrBand.addTextChangedListener(watcher(()->{if(changingFields)return;int band=InputValidator.parse(value(nrBand),512);if(band>0)selectScs(Bands.defaultScs(band));}));
-        ui.gap(parent,9);cellApply=ui.button("锁定",true);cellApply.setOnClickListener(v->applyCell());controls.add(cellApply);parent.addView(cellApply,ui.fill(52));ui.gap(parent,9);
-        cellClear=ui.button("清除解锁",false);cellClear.setOnClickListener(v->{if(!busy){boolean nr=cellTabs.selected()==0;apply(nr?"清除 5G 小区/频点锁":"清除 LTE 小区锁","只清除所选小区/频点锁；保留频段、网络制式和 5G 组网。",new String[]{"cell-clear",nr?"nr":"lte"});}});controls.add(cellClear);parent.addView(cellClear,ui.fill(47));
+        ui.gap(parent,12);cellApply=ui.button("锁定",true);cellApply.setOnClickListener(v->applyCell());controls.add(cellApply);parent.addView(cellApply,ui.fill(52));ui.gap(parent,12);
+        cellClear=ui.outlineButton("清除解锁");cellClear.setOnClickListener(v->{if(!busy){boolean nr=cellTabs.selected()==0;apply(nr?"清除 5G 小区/频点锁":"清除 LTE 小区锁","只清除所选小区/频点锁；保留频段、网络制式和 5G 组网。",new String[]{"cell-clear",nr?"nr":"lte"});}});controls.add(cellClear);parent.addView(cellClear,ui.fill(48));
     }
 
     private void buildBands(LinearLayout parent) {

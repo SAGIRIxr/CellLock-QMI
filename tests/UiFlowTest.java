@@ -70,8 +70,30 @@ public final class UiFlowTest extends Instrumentation {
         }
     }
     private static void run(Context app) throws Exception {
+        for(float scale:new float[]{1f,1.3f})for(int widthDp:new int[]{120,320,360}){
+            Configuration config=new Configuration(app.getResources().getConfiguration());config.fontScale=scale;
+            Ui gridUi=new Ui(app.createConfigurationContext(config));FlowLayout grid=new FlowLayout(gridUi.context,gridUi.dp(8));grid.setPadding(gridUi.dp(3),gridUi.dp(3),gridUi.dp(3),gridUi.dp(3));
+            for(String label:new String[]{"n1","n3","n28","n41","n77","n78"})grid.addView(gridUi.chip(label,"2100"));
+            grid.getChildAt(1).setVisibility(View.GONE);int width=gridUi.dp(widthDp);
+            grid.measure(View.MeasureSpec.makeMeasureSpec(width,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(0,View.MeasureSpec.UNSPECIFIED));grid.layout(0,0,width,grid.getMeasuredHeight());
+            View previous=null;List<View> first=new ArrayList<>();
+            for(int i=0;i<grid.getChildCount();i++){View child=grid.getChildAt(i);if(child.getVisibility()==View.GONE)continue;if(child.getTop()==grid.getPaddingTop())first.add(child);
+                check(child.getLeft()>=grid.getPaddingLeft()&&child.getRight()<=width-grid.getPaddingRight(),"frequency grid stays inside padding");
+                if(previous!=null)check(child.getTop()==previous.getTop()?child.getLeft()-previous.getRight()==gridUi.dp(8):child.getTop()-previous.getBottom()==gridUi.dp(8),"grid spacing stays uniform after hidden chips");previous=child;
+            }
+            check(first.get(first.size()-1).getRight()==width-grid.getPaddingRight(),"complete frequency row fills available width");
+            check(first.stream().allMatch(v->Math.abs(v.getWidth()-first.get(0).getWidth())<=1),"frequency columns have equal width");
+            grid.removeAllViews();grid.measure(View.MeasureSpec.makeMeasureSpec(width,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(0,View.MeasureSpec.UNSPECIFIED));check(grid.getMeasuredHeight()==grid.getPaddingTop()+grid.getPaddingBottom(),"empty frequency grid has no phantom row");
+        }
         Activity activity=new TestActivity(app);Ui ui=new Ui(activity);Host host=new Host();
         LockPage page=new LockPage(activity,ui,host);
+        android.widget.Spinner scs=field(page,"scs");
+        check(scs.getBackgroundTintList()==null,"SCS custom background must not inherit the system dark tint");
+        check(texts(page).stream().anyMatch(t->t.getText().toString().equals("SCS"))&&texts(page).stream().anyMatch(t->t.getText().toString().equals("NR Band")),"lock parameters use consistent technical labels");
+        LineIcon bookmark=new LineIcon(activity,LineIcon.BOOKMARK,Ui.INK);bookmark.setPadding(12,12,12,12);bookmark.layout(0,0,48,48);
+        android.graphics.Bitmap bitmap=android.graphics.Bitmap.createBitmap(48,48,android.graphics.Bitmap.Config.ARGB_8888);bookmark.draw(new android.graphics.Canvas(bitmap));
+        boolean drawn=false,outside=false;for(int y=0;y<48;y++)for(int x=0;x<48;x++)if(android.graphics.Color.alpha(bitmap.getPixel(x,y))>0){drawn=true;if(x<12||x>=36||y<12||y>=36)outside=true;}
+        check(!outside,"bookmark drawing must respect its padded touch area");check(drawn,"bookmark remains visible");bitmap.recycle();
         ModemState state=ModemState.parse(new JSONObject("{\"lteCell\":{\"known\":true,\"cells\":[]},\"nrCell\":{\"known\":false},"
                 +"\"pref\":{\"known\":true,\"rat\":92,\"nrMode\":0,\"lte\":[3,8],\"nrSa\":[28,78],\"nrNsa\":[28,78],\"gsm\":[900],\"wcdma\":[1],\"legacyMask\":\"0000000000000000\"},"
                 +"\"hardware\":{\"known\":true,\"lte\":[3,8],\"nr\":[28,78],\"gsm\":[900],\"wcdma\":[1]}}"));
@@ -168,6 +190,23 @@ public final class UiFlowTest extends Instrumentation {
         for(float scale:new float[]{1f,1.3f}) {
             Configuration config=new Configuration(app.getResources().getConfiguration());config.fontScale=scale;
             Activity scaled=new TestActivity(app.createConfigurationContext(config));Ui scaledUi=new Ui(scaled);RadioReader reader=new RadioReader(scaled);
+            Host savedHost=new Host();LockPage compact=new LockPage(scaled,scaledUi,savedHost);compact.setState(state);
+            Ui.Segmented compactCell=field(compact,"cellTabs"),compactKind=field(compact,"nrKindTabs");
+            for(int widthDp:new int[]{320,360})for(int targetKind=0;targetKind<3;targetKind++){
+                compact.fillSaved(new JSONObject().put("schema",1).put("nr",true).put("arfcn",633984).put("pci",202).put("band",78).put("scs",30));
+                compactCell.select(targetKind==2?1:0);compactKind.select(targetKind==1?1:0);invoke(compact,"updateCellUi");layout(compact,scaledUi.dp(widthDp));
+                Button savedEntry=(Button)texts(compact).stream().filter(t->t.getText().toString().equals("已保存小区 ›")).findFirst().orElseThrow();
+                TextView heading=texts(compact).stream().filter(t->t.getText().toString().equals("锁定目标")).findFirst().orElseThrow();
+                check(savedEntry.getParent()==heading.getParent()&&savedEntry.getLeft()>=heading.getRight(),"saved entry stays beside the target heading");
+                check(savedEntry.getHeight()>=scaledUi.dp(48)&&savedEntry.getWidth()>=savedEntry.getPaint().measureText(savedEntry.getText().toString())+savedEntry.getPaddingLeft()+savedEntry.getPaddingRight(),"saved entry keeps a readable 48dp touch area at "+widthDp+"/"+scale);
+                Button apply=field(compact,"cellApply"),clear=field(compact,"cellClear");
+                check(clear.getTop()-apply.getBottom()==scaledUi.dp(12),"cell actions keep a consistent 12dp gap");
+                if(targetKind==1){View arfcn=(View)UiFlowTest.<View>field(compact,"nrArfcn").getParent(),spacing=(View)UiFlowTest.<View>field(compact,"scs").getParent();check(arfcn.getLeft()==spacing.getLeft()&&arfcn.getWidth()==spacing.getWidth(),"frequency-only fields align after unused columns are hidden");}
+                if(targetKind==2){View notice=field(compact,"nrUnknownHint"),card=(View)heading.getParent().getParent();check(notice.getVisibility()==View.GONE&&apply.getTop()-card.getBottom()==scaledUi.dp(12),"hidden NR notice leaves no extra LTE gap");}
+                int before=savedHost.savedCalls;savedEntry.performClick();check(savedHost.savedCalls==before+1,"saved entry opens the shared list for each target kind");
+                compact.setBusy(true);savedEntry.performClick();check(savedHost.savedCalls==before+1&&!savedEntry.isEnabled(),"saved entry cannot open while a task is running");compact.setBusy(false);
+                check(texts(compact).stream().noneMatch(t->t.getText().toString().equals("配置管理")),"configuration navigation does not compete with form actions");
+            }
             CellsPage cells=new CellsPage(scaled,scaledUi,reader,new CellsPage.Host(){
                 public void onTarget(RadioCell c){}public void onNeedPermission(){}public void onServingChanged(RadioCell c){}public void onSimChanged(){}
             });
