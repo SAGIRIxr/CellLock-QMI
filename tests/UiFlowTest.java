@@ -26,9 +26,10 @@ public final class UiFlowTest extends Instrumentation {
     }
     private static final class Host implements LockPage.Host {
         List<String[]> commands;
+        int savedCalls;
         public void onRefresh() { throw new AssertionError("unexpected refresh"); }
         public void onApply(String title,String summary,List<String[]> value) { commands=value; }
-        public void onRestore() { throw new AssertionError("unexpected restore"); }
+        public void onSavedCells() { savedCalls++; }
         public void onMessage(String title,String message) { throw new AssertionError(title+": "+message); }
     }
     private static void check(boolean value,String message) { checks++; if(!value)throw new AssertionError(message); }
@@ -69,17 +70,59 @@ public final class UiFlowTest extends Instrumentation {
         }
     }
     private static void run(Context app) throws Exception {
+        for(float scale:new float[]{1f,1.3f})for(int widthDp:new int[]{120,320,360}){
+            Configuration config=new Configuration(app.getResources().getConfiguration());config.fontScale=scale;
+            Ui gridUi=new Ui(app.createConfigurationContext(config));FlowLayout grid=new FlowLayout(gridUi.context,gridUi.dp(8));grid.setPadding(gridUi.dp(3),gridUi.dp(3),gridUi.dp(3),gridUi.dp(3));
+            for(String label:new String[]{"n1","n3","n28","n41","n77","n78"})grid.addView(gridUi.chip(label,"2100"));
+            grid.getChildAt(1).setVisibility(View.GONE);int width=gridUi.dp(widthDp);
+            grid.measure(View.MeasureSpec.makeMeasureSpec(width,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(0,View.MeasureSpec.UNSPECIFIED));grid.layout(0,0,width,grid.getMeasuredHeight());
+            View previous=null;List<View> first=new ArrayList<>();
+            for(int i=0;i<grid.getChildCount();i++){View child=grid.getChildAt(i);if(child.getVisibility()==View.GONE)continue;if(child.getTop()==grid.getPaddingTop())first.add(child);
+                check(child.getLeft()>=grid.getPaddingLeft()&&child.getRight()<=width-grid.getPaddingRight(),"frequency grid stays inside padding");
+                if(previous!=null)check(child.getTop()==previous.getTop()?child.getLeft()-previous.getRight()==gridUi.dp(8):child.getTop()-previous.getBottom()==gridUi.dp(8),"grid spacing stays uniform after hidden chips");previous=child;
+            }
+            check(first.get(first.size()-1).getRight()==width-grid.getPaddingRight(),"complete frequency row fills available width");
+            check(first.stream().allMatch(v->Math.abs(v.getWidth()-first.get(0).getWidth())<=1),"frequency columns have equal width");
+            grid.removeAllViews();grid.measure(View.MeasureSpec.makeMeasureSpec(width,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(0,View.MeasureSpec.UNSPECIFIED));check(grid.getMeasuredHeight()==grid.getPaddingTop()+grid.getPaddingBottom(),"empty frequency grid has no phantom row");
+        }
         Activity activity=new TestActivity(app);Ui ui=new Ui(activity);Host host=new Host();
         LockPage page=new LockPage(activity,ui,host);
+        android.widget.Spinner scs=field(page,"scs");
+        check(scs.getBackgroundTintList()==null,"SCS custom background must not inherit the system dark tint");
+        check(texts(page).stream().anyMatch(t->t.getText().toString().equals("SCS"))&&texts(page).stream().anyMatch(t->t.getText().toString().equals("NR Band")),"lock parameters use consistent technical labels");
+        LineIcon bookmark=new LineIcon(activity,LineIcon.BOOKMARK,Ui.INK);bookmark.setPadding(12,12,12,12);bookmark.layout(0,0,48,48);
+        android.graphics.Bitmap bitmap=android.graphics.Bitmap.createBitmap(48,48,android.graphics.Bitmap.Config.ARGB_8888);bookmark.draw(new android.graphics.Canvas(bitmap));
+        boolean drawn=false,outside=false;for(int y=0;y<48;y++)for(int x=0;x<48;x++)if(android.graphics.Color.alpha(bitmap.getPixel(x,y))>0){drawn=true;if(x<12||x>=36||y<12||y>=36)outside=true;}
+        check(!outside,"bookmark drawing must respect its padded touch area");check(drawn,"bookmark remains visible");bitmap.recycle();
         ModemState state=ModemState.parse(new JSONObject("{\"lteCell\":{\"known\":true,\"cells\":[]},\"nrCell\":{\"known\":false},"
                 +"\"pref\":{\"known\":true,\"rat\":92,\"nrMode\":0,\"lte\":[3,8],\"nrSa\":[28,78],\"nrNsa\":[28,78],\"gsm\":[900],\"wcdma\":[1],\"legacyMask\":\"0000000000000000\"},"
                 +"\"hardware\":{\"known\":true,\"lte\":[3,8],\"nr\":[28,78],\"gsm\":[900],\"wcdma\":[1]}}"));
         page.setState(state);
+        check(java.util.Arrays.stream(UiFlowTest.<java.util.BitSet[]>field(page,"bandDrafts")).allMatch(java.util.BitSet::isEmpty),"known preferences must start with no draft selection");
+        ModemState unknown=new ModemState();unknown.inheritHardware(state);page.setState(unknown);
+        check(java.util.Arrays.stream(UiFlowTest.<java.util.BitSet[]>field(page,"bandDrafts")).allMatch(java.util.BitSet::isEmpty),"unknown preferences must not select all hardware bands");
+        state.nrSa.clear(28);state.nrNsa.clear(28);page.setState(state);
+        command(page,host,"bandApply","band-nr","both","78");
+        check(UiFlowTest.<java.util.BitSet[]>field(page,"bandDrafts")[2].get(78)&&UiFlowTest.<java.util.BitSet[]>field(page,"bandDrafts")[3].get(78),"n78 restriction selected for SA and NSA");
+        state.nrSa.set(28);page.setState(state);
+        check(UiFlowTest.<java.util.BitSet[]>field(page,"bandDrafts")[2].isEmpty()&&UiFlowTest.<java.util.BitSet[]>field(page,"bandDrafts")[3].get(78),"SA and NSA default selections follow their separate restrictions");
+        state.nrNsa.set(28);page.setState(state);
+        check(UiFlowTest.<java.util.BitSet[]>field(page,"bandDrafts")[1].isEmpty(),"opening all bands clears untouched default selection");
+        page.setState(state);
+        UiFlowTest.<List<TextView>>field(page,"bandChips").get(0).performClick();
+        command(page,host,"bandApply","band-nr","both","28");
+        page.setState(state);
+        command(page,host,"bandApply","band-nr","both","28");
+        Bundle draft=new Bundle();page.save(draft);LockPage draftRestored=new LockPage(activity,ui,new Host());draftRestored.setState(state);draftRestored.restore(draft);
+        check(UiFlowTest.<java.util.BitSet[]>field(draftRestored,"bandDrafts")[1].equals(UiFlowTest.<java.util.BitSet[]>field(page,"bandDrafts")[1]),"selected draft survives recreation");
+        page.resetForSubscription();page.setState(state);
+        check(java.util.Arrays.stream(UiFlowTest.<java.util.BitSet[]>field(page,"bandDrafts")).allMatch(java.util.BitSet::isEmpty),"SIM switch clears selected draft");
+        check(!UiFlowTest.<Button>field(page,"bandApply").isEnabled(),"empty draft cannot write empty modem bands");
         Ui.Segmented section=field(page,"sectionTabs"),cell=field(page,"cellTabs"),band=field(page,"bandTabs");
         check(((Button)section.getChildAt(0)).getText().toString().equals("制式")&&((Button)section.getChildAt(2)).getText().toString().equals("小区"),"section order");
         check(((Button)cell.getChildAt(0)).getText().toString().equals("5G NR")&&((Button)band.getChildAt(0)).getText().toString().equals("5G NR"),"NR first");
         check(UiFlowTest.<TextView>field(page,"nrCellStatus").getText().toString().equals("未知"),"unknown cannot imply unlocked");
-        check(UiFlowTest.<Button>field(page,"cellApply").getText().toString().equals("锁定")&&UiFlowTest.<Button>field(page,"cellClear").getText().toString().equals("解除 5G 小区锁"),"specific NR unlock label");
+        check(UiFlowTest.<Button>field(page,"cellApply").getText().toString().equals("锁定")&&UiFlowTest.<Button>field(page,"cellClear").getText().toString().equals("清除 5G 小区/频点锁"),"specific NR unlock label");
         RadioCell nr=target(true),lte=target(false);page.setServingCell(nr);page.fillTarget(nr);
         for(RadioCell target:List.of(nr,lte))for(String name:new String[]{"MCC","MNC","PLMN"}) {
             RadioCell primary=RadioCell.parse(target.json().put("rsrp",android.telephony.CellInfo.UNAVAILABLE),"Root 电话")
@@ -99,11 +142,18 @@ public final class UiFlowTest extends Instrumentation {
         UiFlowTest.<Ui.Segmented>field(page,"nrKindTabs").select(1);invoke(page,"updateCellUi");
         command(page,host,"cellApply","freq-nr","154570","15");
         page.fillTarget(lte);check(cell.selected()==1,"LTE target opens LTE form");
-        check(UiFlowTest.<Button>field(page,"cellClear").getText().toString().equals("解除 LTE 小区锁"),"LTE unlock label follows selected radio");
+        check(UiFlowTest.<Button>field(page,"cellClear").getText().toString().equals("清除 LTE 小区锁"),"LTE unlock label follows selected radio");
         command(page,host,"cellApply","cell-lte","1650","111");command(page,host,"cellClear","cell-clear","lte");
-        band.select(0);invoke(page,"renderBandChoices");command(page,host,"bandApply","band-nr","both","28,78");
-        band.select(1);invoke(page,"renderBandChoices");command(page,host,"bandApply","band-lte","3,8");
-        band.select(2);invoke(page,"renderBandChoices");command(page,host,"bandApply","band-gsm","900");
+        page.fillSaved(new JSONObject().put("schema",1).put("nr",true).put("arfcn",633984).put("pci",202).put("band",78).put("scs",30).put("seenAt",1));
+        check(section.selected()==2&&cell.selected()==0,"historical target enters the same form without recent timestamp");
+        command(page,host,"cellApply","cell-nr","633984","202","78","30");
+        check(UiFlowTest.<TextView>field(page,"nrHint").getText().toString().contains("保存小区"),"historical source remains visible");
+        page.fillSaved(new JSONObject().put("schema",1).put("nr",true).put("arfcn",Integer.MAX_VALUE).put("pci",Integer.MAX_VALUE).put("band",0).put("scs",0));
+        check(UiFlowTest.<android.widget.EditText>field(page,"nrArfcn").getText().length()==0&&UiFlowTest.<android.widget.EditText>field(page,"nrPci").getText().length()==0,"incomplete historical parameters require form completion");
+        page.fillTarget(lte);
+        band.select(0);invoke(page,"renderBandChoices");UiFlowTest.<Button>field(page,"bandAll").performClick();command(page,host,"bandApply","band-nr","both","28,78");
+        band.select(1);invoke(page,"renderBandChoices");UiFlowTest.<Button>field(page,"bandAll").performClick();command(page,host,"bandApply","band-lte","3,8");
+        band.select(2);invoke(page,"renderBandChoices");UiFlowTest.<Button>field(page,"bandAll").performClick();command(page,host,"bandApply","band-gsm","900");
         check(host.commands.size()==2&&host.commands.get(1)[0].equals("band-wcdma"),"legacy group remains mapped");
         band.select(0);Ui.Segmented nrTarget=field(page,"nrTargetTabs");nrTarget.select(1);page.setNrCombinedOnly(true);
         check(nrTarget.selected()==0&&!nrTarget.getChildAt(1).isEnabled()&&!nrTarget.getChildAt(2).isEnabled(),"confirmed combined-only firmware disables independent frequency controls");
@@ -140,6 +190,23 @@ public final class UiFlowTest extends Instrumentation {
         for(float scale:new float[]{1f,1.3f}) {
             Configuration config=new Configuration(app.getResources().getConfiguration());config.fontScale=scale;
             Activity scaled=new TestActivity(app.createConfigurationContext(config));Ui scaledUi=new Ui(scaled);RadioReader reader=new RadioReader(scaled);
+            Host savedHost=new Host();LockPage compact=new LockPage(scaled,scaledUi,savedHost);compact.setState(state);
+            Ui.Segmented compactCell=field(compact,"cellTabs"),compactKind=field(compact,"nrKindTabs");
+            for(int widthDp:new int[]{320,360})for(int targetKind=0;targetKind<3;targetKind++){
+                compact.fillSaved(new JSONObject().put("schema",1).put("nr",true).put("arfcn",633984).put("pci",202).put("band",78).put("scs",30));
+                compactCell.select(targetKind==2?1:0);compactKind.select(targetKind==1?1:0);invoke(compact,"updateCellUi");layout(compact,scaledUi.dp(widthDp));
+                Button savedEntry=(Button)texts(compact).stream().filter(t->t.getText().toString().equals("已保存小区 ›")).findFirst().orElseThrow();
+                TextView heading=texts(compact).stream().filter(t->t.getText().toString().equals("锁定目标")).findFirst().orElseThrow();
+                check(savedEntry.getParent()==heading.getParent()&&savedEntry.getLeft()>=heading.getRight(),"saved entry stays beside the target heading");
+                check(savedEntry.getHeight()>=scaledUi.dp(48)&&savedEntry.getWidth()>=savedEntry.getPaint().measureText(savedEntry.getText().toString())+savedEntry.getPaddingLeft()+savedEntry.getPaddingRight(),"saved entry keeps a readable 48dp touch area at "+widthDp+"/"+scale);
+                Button apply=field(compact,"cellApply"),clear=field(compact,"cellClear");
+                check(clear.getTop()-apply.getBottom()==scaledUi.dp(12),"cell actions keep a consistent 12dp gap");
+                if(targetKind==1){View arfcn=(View)UiFlowTest.<View>field(compact,"nrArfcn").getParent(),spacing=(View)UiFlowTest.<View>field(compact,"scs").getParent();check(arfcn.getLeft()==spacing.getLeft()&&arfcn.getWidth()==spacing.getWidth(),"frequency-only fields align after unused columns are hidden");}
+                if(targetKind==2){View notice=field(compact,"nrUnknownHint"),card=(View)heading.getParent().getParent();check(notice.getVisibility()==View.GONE&&apply.getTop()-card.getBottom()==scaledUi.dp(12),"hidden NR notice leaves no extra LTE gap");}
+                int before=savedHost.savedCalls;savedEntry.performClick();check(savedHost.savedCalls==before+1,"saved entry opens the shared list for each target kind");
+                compact.setBusy(true);savedEntry.performClick();check(savedHost.savedCalls==before+1&&!savedEntry.isEnabled(),"saved entry cannot open while a task is running");compact.setBusy(false);
+                check(texts(compact).stream().noneMatch(t->t.getText().toString().equals("配置管理")),"configuration navigation does not compete with form actions");
+            }
             CellsPage cells=new CellsPage(scaled,scaledUi,reader,new CellsPage.Host(){
                 public void onTarget(RadioCell c){}public void onNeedPermission(){}public void onServingChanged(RadioCell c){}public void onSimChanged(){}
             });

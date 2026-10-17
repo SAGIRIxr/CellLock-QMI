@@ -45,6 +45,10 @@ final class RadioReader {
     private volatile int processor = -1, diagnosticMisses;
     private volatile long nextDiagProbe;
     private volatile boolean diagUnsupported;
+    private volatile int diagnosticSubscription=-1;
+    private volatile String diagnosticSummary="尚无本次订阅的诊断摘要";
+    String diagnosticSummary(int subscription){return diagnosticSubscription==subscription?diagnosticSummary:"当前订阅尚无诊断摘要";}
+    void invalidateMeasurements(){cancel();worker.execute(diagnosticCells::clear);diagnosticSubscription=-1;diagnosticSummary="基带已请求重载，观测待刷新";}
     private final DiagnosticCells diagnosticCells = new DiagnosticCells();
 
     RadioReader(Context context) { this.context = context.getApplicationContext(); }
@@ -112,20 +116,15 @@ final class RadioReader {
         if (!executable.isFile()) throw new IllegalStateException("读取组件未安装");
         String command = "exec " + RootShell.quote(executable.getAbsolutePath()) + " " + args;
         if (!library.equals("libcelllock_diag.so")) return RootShell.run(command, timeout);
-        // APK 路径处于隔离 linker namespace；只在 Root 私有临时目录执行自带 ELF。
-        command = "dir=$(mktemp -d /data/local/tmp/celllock-diag.XXXXXX) || exit 1; "
-                + "trap 'rm -f \"$dir/diag\"; rmdir \"$dir\"' EXIT; "
-                + "cp " + RootShell.quote(executable.getAbsolutePath()) + " \"$dir/diag\" && "
-                + "chmod 700 \"$dir/diag\" && \"$dir/diag\" " + args;
-        return RootShell.runDiagnostic(command, timeout);
+        return RootShell.runDiagnostic(executable, args, timeout);
     }
 
-    void loadSims(Consumer<List<SimInfo>> callback) {
+    void loadSims(boolean allowRoot,Consumer<List<SimInfo>> callback) {
         int token = ++metadataGeneration;
         worker.execute(() -> {
             if (closed || token != metadataGeneration) return;
             List<SimInfo> sims = normalSims(context);
-            boolean root = RootShell.probe();
+            boolean root = allowRoot && RootShell.probe();
             if (sims.isEmpty() && root) try { sims = rootSims(phone(context, "sims", -1)); } catch (Exception ignored) { }
             if (sims.isEmpty() && root && RootShell.available()) try { sims = MeasurementDecoder.uim(nativeRead("libcelllock_read.so", "sims", 10)); } catch (Exception ignored) { }
             if (sims.isEmpty()) {
@@ -205,6 +204,7 @@ final class RadioReader {
             if (!current(workToken)) return;
             List<RadioCell> cells = new ArrayList<>(ordinary);
             boolean changed = false;
+            StringBuilder diagnostic=new StringBuilder("采集上下文："+(sim==null?"无订阅":sim.key())+"，普通观测 "+ordinary.size());
             String status = cells.isEmpty() ? "当前权限或设备接口暂未返回小区" : "系统观测";
             if (RootShell.probe()) {
                 if (cells.stream().noneMatch(RadioCell::hasMappedIdentity) && sim != null && sim.subscriptionId >= 0) try {
@@ -228,6 +228,7 @@ final class RadioReader {
                     List<RadioCell> measured = MeasurementDecoder.nas(nativeRead("libcelllock_read.so", "cells " + sim.slot, 8), sim.slot);
                     if (!current(workToken)) return;
                     verifySlot(context, sim.subscriptionId, sim.slot);
+                    diagnostic.append("\nNAS 解码 ").append(measured.size());
                     if (!measured.isEmpty()) {
                         status = cells.isEmpty() ? "QMI NAS 观测" : status + " · NAS 补充";
                         supplementReadings(cells, measured);
@@ -244,34 +245,40 @@ final class RadioReader {
                         if (!current(workToken) || !RootShell.available()) break;
                         try {
                             List<JSONObject> records = MeasurementDecoder.records(nativeRead("libcelllock_diag.so", String.valueOf(candidate), 12));
-                            if (records.isEmpty()) continue;
+                            if (records.isEmpty()){diagnostic.append("\nprocessor ").append(candidate).append("：没有完成回执");continue;}
                             JSONObject result = records.get(records.size() - 1);
-                            if (result.has("logs")) {
-                                List<RadioCell> diagnostic = MeasurementDecoder.nrBatch(result);
-                                if (!diagnostic.isEmpty()) {
-                                    diagnosticCells.merge(diagnostic, SystemClock.elapsedRealtime());
-                                    processor = candidate; diagnosticMisses = 0; received = true; break;
+                            if(result.has("logs")&&!result.has("error")) {
+                                MeasurementDecoder.NrBatch batch=MeasurementDecoder.nrBatch(result);
+                                diagnostic.append("\nprocessor ").append(candidate).append("：").append(batch.summary());
+                                if(batch.usable()) {
+                                    diagnosticCells.merge(batch.cells,SystemClock.elapsedRealtime());
+                                    processor=candidate;diagnosticMisses=0;received=true;break;
                                 }
-                            } else if (result.optString("error").equals("library") || result.optString("error").equals("api")
-                                    || result.optString("error").equals("cleanup")) {
-                                diagUnsupported = true; break;
+                            } else {
+                                String error=result.optString("error");
+                                diagnostic.append("\nprocessor ").append(candidate).append(error.equals("no_log")?"：无日志 ":"：通道 ").append(error).append(" / ").append(result.optString("stage"));
+                                if(error.equals("library")||error.equals("api")||error.equals("cleanup")){diagUnsupported=true;break;}
                             }
-                        } catch (IllegalArgumentException error) { diagUnsupported = true; break; }
-                        catch (Exception ignored) { }
+                        } catch(IllegalArgumentException error){diagnostic.append("\nprocessor ").append(candidate).append("：批次无效 / ").append(error.getMessage());}
+                        catch(Exception error){diagnostic.append("\nprocessor ").append(candidate).append("：读取失败 / ").append(error.getMessage());}
                     }
                     if (!received) {
                         diagnosticMisses = Math.min(2, diagnosticMisses + 1);
                         nextDiagProbe = SystemClock.elapsedRealtime() + 5_000;
                     }
                 }
+                if(diagUnsupported)diagnostic.append("\nDIAG 通道已暂停，手动刷新可重试；格式错误不会触发该暂停");
+                else if(SystemClock.elapsedRealtime()<nextDiagProbe)diagnostic.append("\nDIAG 沿用既有有界退避");
                 if (RootShell.available() && !changed) {
-                    List<RadioCell> diagnostic = diagnosticCells.values(SystemClock.elapsedRealtime());
-                    cells.addAll(diagnostic);
-                    if (!diagnostic.isEmpty()) status += " · NR 最近 15 秒观测";
+                    List<RadioCell> recent = diagnosticCells.values(SystemClock.elapsedRealtime());
+                    cells.addAll(recent);
+                    if (!recent.isEmpty()) status += " · NR 最近 15 秒观测";
                 }
-            } else diagnosticCells.clear();
+            } else {diagnosticCells.clear();diagnostic.append("\nRoot 当前不可用，未采集 QMI / DIAG");}
             rootMeasurements = RootShell.available() && cells.stream().anyMatch(c -> !c.source.startsWith("系统"));
             if (changed) { cells.clear(); status = "SIM 映射已改变，请重新选择"; }
+            diagnostic.append("\n合并前输出 ").append(cells.size()).append("，可靠归属 ").append(cells.stream().filter(c->c.mapped).count()).append("；设备级 DIAG 不推断 SIM。缓存窗口 15 秒。");
+            if(current(workToken)){diagnosticSubscription=sim==null?-1:sim.subscriptionId;diagnosticSummary=diagnostic.substring(0,Math.min(2400,diagnostic.length()));}
             Observation result = new Observation(cells, status, changed);
             main.post(() -> { if (current(workToken)) callback.accept(result); });
         });

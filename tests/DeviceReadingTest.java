@@ -25,7 +25,7 @@ public final class DeviceReadingTest extends Instrumentation {
             RadioReader reader = holder[0];
             CountDownLatch loaded = new CountDownLatch(1);
             @SuppressWarnings("unchecked") List<SimInfo>[] sims = new List[1];
-            runOnMainSync(() -> reader.loadSims(value -> { sims[0] = value; loaded.countDown(); }));
+            runOnMainSync(() -> reader.loadSims(true,value -> { sims[0] = value; loaded.countDown(); }));
             check(loaded.await(20, TimeUnit.SECONDS), "SIM loading timeout");
             check(RootShell.available(), "Root unavailable");
             check(sims[0] != null && !sims[0].isEmpty(), "no usable SIM");

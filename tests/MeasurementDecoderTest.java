@@ -46,6 +46,12 @@ public final class MeasurementDecoderTest {
             b.putShort((short)pci).putShort((short)0).putInt(0).putInt(-100 * 128).putInt(0);
         return b.array();
     }
+    private static byte[] nrCells(int count) {
+        ByteBuffer b=buffer(60+count*16);b.putShort((short)b.capacity()).putShort((short)0xb97f).putLong(0).putShort((short)7).putShort((short)2).put((byte)1);
+        b.position(28);b.putInt(504990).put((byte)count).put((byte)0).putShort((short)48);b.position(60);
+        for(int i=0;i<count;i++)b.putShort((short)i).putShort((short)0).putInt(0).putInt(-100*128).putInt(0);
+        return b.array();
+    }
     private static void observation(RadioCell cell) {
         check(!cell.mapped && !cell.hasTarget() && cell.timestamp == 0, "unknown mapping/time is observation only");
     }
@@ -59,16 +65,38 @@ public final class MeasurementDecoderTest {
         ByteBuffer later = ByteBuffer.wrap(next).order(ByteOrder.LITTLE_ENDIAN);
         later.putShort(60, (short)49).putInt(68, -105 * 128).putShort(76, (short)50);
         JSONObject batch = new JSONObject().put("logs", new JSONArray().put(hex(packet)).put(hex(next)));
-        cells = MeasurementDecoder.nrBatch(batch);
+        cells = MeasurementDecoder.nrBatch(batch).cells;
         check(cells.size() == 3 && cells.stream().anyMatch(c -> c.pci == 48), "retain neighbor absent from last packet");
         check(cells.stream().anyMatch(c -> c.pci == 49 && c.rsrp == -105), "latest reading replaces duplicate");
         for (RadioCell cell : cells) observation(cell);
-        check(MeasurementDecoder.nrBatch(new JSONObject(batch.toString()).put("error", "cleanup")).isEmpty(), "discard unclean batch");
+        check(MeasurementDecoder.nrBatch(new JSONObject(batch.toString()).put("error", "cleanup")).cells.isEmpty(), "discard unclean batch");
         JSONArray tooMany = new JSONArray();
         for (int i = 0; i < 33; i++) tooMany.put(hex(packet));
         rejected(() -> MeasurementDecoder.nrBatch(new JSONObject().put("logs", tooMany)));
         byte[] unknown = next.clone(); unknown[12] = 9;
-        rejected(() -> MeasurementDecoder.nrBatch(new JSONObject().put("logs", new JSONArray().put(hex(packet)).put(hex(unknown)))));
+        MeasurementDecoder.NrBatch mixed=MeasurementDecoder.nrBatch(new JSONObject().put("logs",new JSONArray().put(hex(packet)).put(hex(unknown))));
+        check(mixed.cells.size()==2&&mixed.valid==1&&mixed.unsupported==1&&mixed.damaged==0,"unknown packet does not discard valid result");
+        mixed=MeasurementDecoder.nrBatch(new JSONObject().put("logs",new JSONArray().put(hex(unknown)).put(hex(packet))));
+        check(mixed.cells.size()==2&&mixed.valid==1&&mixed.unsupported==1,"unknown packet order does not change valid output");
+        mixed=MeasurementDecoder.nrBatch(new JSONObject().put("logs",new JSONArray().put(hex(packet)).put("bad").put(hex(Arrays.copyOf(packet,65)))));
+        check(mixed.cells.size()==2&&mixed.valid==1&&mixed.damaged==2,"malformed hex and truncated packets isolated as whole packets");
+        mixed=MeasurementDecoder.nrBatch(new JSONObject().put("logs",new JSONArray().put(hex(unknown))));
+        check(!mixed.usable()&&mixed.unsupported==1&&mixed.summary().contains("2.9"),"all unknown distinct from valid zero cells");
+        check(MeasurementDecoder.nrBatch(new JSONObject().put("logs",new JSONArray())).packets==0,"no logs is distinct from unknown");
+        String large="00".repeat(65535);
+        rejected(()->MeasurementDecoder.nrBatch(new JSONObject().put("logs",new JSONArray().put(large).put(large))));
+        rejected(()->MeasurementDecoder.nrBatch(new JSONObject().put("logs",new JSONArray().put(5))));
+        JSONArray manyCells=new JSONArray();for(int i=0;i<32;i++)manyCells.put(hex(packet));
+        check(MeasurementDecoder.nrBatch(new JSONObject().put("logs",manyCells)).valid==32,"legal count boundary preserves duplicates with latest selection");
+        MeasurementDecoder.NrBatch emptyDecoded=MeasurementDecoder.nrBatch(new JSONObject().put("logs",new JSONArray().put(hex(nrCells(0)))));
+        check(emptyDecoded.usable()&&emptyDecoded.cells.isEmpty(),"valid zero cells differs from no decodable data");
+        JSONArray limitCells=new JSONArray();for(int i=0;i<8;i++)limitCells.put(hex(nrCells(64)));
+        check(MeasurementDecoder.nrBatch(new JSONObject().put("logs",limitCells)).valid==8,"512 decoded cells allowed before dedupe");
+        limitCells.put(hex(nrCells(64)));rejected(()->MeasurementDecoder.nrBatch(new JSONObject().put("logs",limitCells)));
+        byte[] rawA=new byte[65535],rawB=new byte[32769];
+        for(byte[] raw:new byte[][]{rawA,rawB})ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN).putShort((short)raw.length).putShort((short)0xb97f).putLong(0).putShort((short)9).putShort((short)2);
+        check(MeasurementDecoder.nrBatch(new JSONObject().put("logs",new JSONArray().put(hex(rawA)).put(hex(rawB)))).bytes==98304,"exact byte budget allowed with unsupported packets");
+        rejected(()->MeasurementDecoder.nrBatch(new JSONObject().put("logs",new JSONArray().put(hex(rawA)).put(hex(rawB)).put("00"))));
         for (int length=0; length<packet.length; length++) {
             final byte[] truncated=Arrays.copyOf(packet,length);
             rejected(()->MeasurementDecoder.nr(truncated));

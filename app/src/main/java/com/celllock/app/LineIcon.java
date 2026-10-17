@@ -8,7 +8,7 @@ import android.view.View;
 
 /** 线条图标，按 24×24 网格绘制，任意密度下都清晰。 */
 final class LineIcon extends View {
-    static final String RADIO = "radio", LOCK = "lock", DEVICE = "device", SIM = "sim", ARROW = "arrow", BARS = "bars";
+    static final String RADIO = "radio", LOCK = "lock", DEVICE = "device", SIM = "sim", ARROW = "arrow", BARS = "bars", BOOKMARK = "bookmark", ADJUST = "adjust";
 
     private final String kind;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -36,13 +36,21 @@ final class LineIcon extends View {
     @Override protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
         canvas.save();
-        canvas.scale(getWidth() / 24f, getHeight() / 24f);
+        canvas.translate(getPaddingLeft(), getPaddingTop());
+        canvas.scale((getWidth() - getPaddingLeft() - getPaddingRight()) / 24f,
+                (getHeight() - getPaddingTop() - getPaddingBottom()) / 24f);
         paint.setColor(color);
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(1.65f);
         paint.setStrokeCap(Paint.Cap.ROUND);
         paint.setStrokeJoin(Paint.Join.ROUND);
         switch (kind) {
+            case ADJUST:
+                canvas.drawLine(3,6,7,6,paint);canvas.drawLine(11,6,21,6,paint);canvas.drawCircle(9,6,2,paint);
+                canvas.drawLine(3,12,13,12,paint);canvas.drawLine(17,12,21,12,paint);canvas.drawCircle(15,12,2,paint);
+                canvas.drawLine(3,18,7,18,paint);canvas.drawLine(11,18,21,18,paint);canvas.drawCircle(9,18,2,paint);break;
+            case BOOKMARK:
+                path.rewind();path.moveTo(6,3);path.lineTo(18,3);path.lineTo(18,22);path.lineTo(12,17);path.lineTo(6,22);path.close();canvas.drawPath(path,paint);break;
             case LOCK:
                 canvas.drawRoundRect(5, 10, 19, 21, 3, 3, paint);
                 canvas.drawArc(8, 2, 16, 16, 180, 180, false, paint);

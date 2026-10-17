@@ -38,9 +38,10 @@ final class Backend {
 
         String output;
         try {
-            output = RootShell.runWrite(command.toString(), TIMEOUT_SECONDS);
+            output = RootShell.runBackend(command.toString(), TIMEOUT_SECONDS, args.length > 0 && args[0].equals("state"));
         } catch (Exception e) {
-            return ModemResult.failure("root", e.getMessage(), "");
+            boolean uncertain = e instanceof RootShell.Failure && ((RootShell.Failure)e).started && args.length > 0 && !args[0].equals("state");
+            return ModemResult.failure(uncertain ? "unknown" : "root", e.getMessage(), "");
         }
         JSONObject json = null;
         for (String line : output.split("\\r?\\n")) {

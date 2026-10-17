@@ -1,57 +1,28 @@
 # CellLock 开发交接
-本文面向继续开发的工程师，随完整源码和 GPL-3.0-only 许可证使用。源码仓库：[CellLock-QMI](https://github.com/SAGIRIxr/CellLock-QMI)；下载入口：[v0.3.0](https://github.com/SAGIRIxr/CellLock-QMI/releases/tag/v0.3.0)。文中路径均相对于源码项目根目录，其余构建、协议及测试说明不依赖聊天记录。
 
-## 1. 先了解当前边界
+本文描述当前实现与开发入口。用户操作见 [README](../README.md)，版本变化见 [CHANGELOG](../CHANGELOG.md)，历史证据与验收边界见 [验证记录](../native/VALIDATION.md)。源码版本为 **0.4.9 / versionCode 13**，尚未发布，公开下载仍为 v0.3.0。
 
-CellLock 是面向已 Root 高通 Android 手机的本地网络设置工具，当前实测设备为小米 14 Pro / SM8650 / Android 14。应用为 Java 原生界面，后端为 NDK 编译的 arm64 C 可执行程序，经 Root 使用 QMI / QRTR。没有联网权限、广告、账号或会员模块。
+## 1. 当前边界
 
-当前源码版本为 **0.4.8 / versionCode 12**，0.4 系列仍为本地验证版本，公开下载入口保留 v0.3.0。以下旧版测试数量和行为说明按版本记录，不代表当前版本的完整验收结果；本轮现场验证记录仅本地保存，不纳入源码仓库；读取约定见下方。
+应用为已 Root 高通设备提供本地网络设置，无联网权限、账号、广告或联网 SDK。写入曾在 SM8650 / Android 14 验证，读取及当前集成在 SM8250 / Android 13 / MIUI 14 验证；这些结果不代表通用支持。
 
-0.4.8 将普通选频段与初始配置恢复分开：`restore-lte`、`restore-nr` 和 `restore-legacy` 使用完整原值比较和写回，快照沿用 schema 2、原有保存键与首次保存规则。NR 独立字段明确拒绝后，只有 SA / NSA 目标相同的请求可使用合并字段；缓存仅在已验证的当前卡槽会话中生效，普通读取不做写探针。全部开放输出逐项结构化结果；`OperationReport` / `ResultItem` 供结果、日志及旋转恢复共用，界面不解析中文回执判断状态。
+配置管理提供多份普通快照、独立频段开放及快速 / 完整清除。默认范围登记入口及任务已移除，旧记录不参与决策；旧 clear-all / register-default 确认须重新选择。快速清除保留 RAT / NR mode；完整清除在固定持久项核对后仅发送一次 SSR，影响双卡，不等待恢复、不补写，最终状态保持未核验。
 
-三页标题统一 24sp、移除右上 CellLock；其他观测说明在展开时显示，上下 margin 各 12dp，收起不留说明间距。`Ui.dialog` 复用现有配色和控件，固定标题与底部操作，正文滚动；确认任务、结果、记录展开与滚动位置在 Bundle 中恢复，确认后仍重新核验真实 SIM。设备页和锁定页共用 Session 的首次自动读取条件；Root 拒绝后不自动重复申请。
+Root 授权缓存与常驻 su shell 在进程内复用，后台和空闲不主动关闭；失效时有限重建。撤销授权不保证已有 UID0 shell 立即失权；可能已发出的写请求不得重发。DIAG / EFS 正常清理未确认时暂停后续基带操作。
 
-0.4 在 `modifications` 分支本地接入自适应读取，未发布、未上传。正式 Activity 已在小米 M2012K11AC / SM8250 / Android 13 / MIUI 14 验证：电话、精确及近似位置权限全部拒绝、系统定位关闭时仍可取得两卡 Root 电话测量与设备级 NR 邻区；还验证了普通接口、厂商 AppOps 受限回退、Root 拒绝及恢复、旋转和后台退出。
+普通订阅受限时依次尝试 Root 电话、UIM 与公开卡状态；UIM-only 不伪造 subId。小区优先使用有新时间戳的普通测量，再尝试 Root 电话、严格绑定的 NAS 及设备级 NR DIAG。Root 可用且映射未改变时，即使电话服务身份完整也补读 NAS；隐藏 API 跨 ROM 失败时须回退，不自动修改权限或定位。Root 拒绝后不自动重复申请，用户手动刷新可重试。
 
-无新增 Root 开关，也无自动授权或定位设置修改。普通订阅受限时依次尝试 Root 电话、UIM 和公开卡状态；小区优先使用有新时间戳的普通接口，受限或只有旧缓存时尝试 Root 电话。0.4.4 起 Root 可用且映射未改变时，即使电话已有完整服务身份也补读严格绑定的 NAS，再补充设备级 NR DIAG。UIM-only 不伪造 subId；NAS/DCI 时间或映射未完成核验时不冒充可信服务测量，同频候选资格见下方 0.4.2 说明。Session 写入前后均重新读取真实订阅映射，缓存只用于界面草稿。
+源码为 Java 原生界面与 NDK arm64 C 后端，QMI 使用 QRTR。文中源码路径相对于项目根目录；开发约定不依赖聊天记录。
 
-已通过：读取解析 364 项（含既有双卡原始回包和 30 个 NR 日志）、输入 46 项、历史 22 项、SIM 状态 8 项、快照 136 项及原生 mock 协议 105 项；构建与 lint 通过（0 errors / 25 warnings）。正常 DCI 会话能退出、后台无读取子进程或临时目录残留；厂商初始化挂死、异常注销及其他设备适配尚未真机演练。
+### 读取与分类
 
-本轮修复 APK 安装目录的 linker namespace 无法加载厂商 libdiag：仅将自编 DIAG ELF 放入 Root 私有 `/data/local/tmp` 临时目录执行，正常退出删除，不复制厂商库或修改系统配置。DIAG 单次无日志时独立保留最多 60 秒的已接收观测并标年龄，不参与曲线或锁定。Root 重新允许后，手动刷新会补读真实订阅，保留原先所选物理槽。
-
-0.4.1 后续修复：系统返回 PCI 不可用时保留有效信号，仅限制目标；Root 可用时仍尝试补全身份。DIAG 从只取最后一包改为合并短会话的最多 32 包 / 96 KiB，避免漏掉前面包中的邻区。当前主机检查 689 项、原生缓冲边界自检通过，普通读取回归有同权限下的新旧正式包对照。详细条件及本轮恢复基线见上述读取验证记录。
-
-0.4.2 按用户要求放宽候选资格：诊断 / NAS 邻区只要与当前服务制式、频段、频点一致且 PCI 合法，最近接收的观测可填入所选 SIM 的锁定表单；不伪造 SIM 归属、原始测量时间或服务角色。写入参数及订阅到卡槽核验仍由原流程负责。`DiagnosticCells` 合并最近 15 秒诊断观测，每个小区独立过期；选卡、服务频段或频点变化清空，读取无包后等待 5 秒再探测。普通 / Root 电话逐字段处理不可用值，NAS / DIAG 已知占位 PCI 不再丢弃整条记录；未知协议、截断、非法非占位身份仍拒绝。保留并显示可得的 RSRQ、SINR、RSSI、CSI 指标、CI/NCI、TAC、MCC/MNC、运营商、角色及频段来源；其他来源的有效记录不会因补读覆盖而消失。主机检查见本轮读取验证记录，其他机型及实际 NR 驻留不据此认定通过。
-
-0.4.3 工作区审查修复：空结果的权限引导不再次调用手动刷新，恢复现有 5 秒调度；权限历史按 `permissionAsked:<权限名>` 分别保存，旧的统一标记不阻止首次申请另一权限。NR 同频候选的推算频段通过现有 `Bands.nrBandForArfcn` 优先匹配已知服务频段，真实系统报告的频段不覆盖；邻区显示及锁定表单使用同一规则。DIAG 入口连续两轮无包后重新尝试两个入口，手动刷新重置探测，不推断 processor 与 SIM 的对应关系。NAS 保留服务 PLMN、TAC、CI/NCI，LTE 邻区不继承服务标识；ICCID 始终脱敏，测试归档单独脱敏网络字段。读取完整性统一使用 `RadioCell.hasMappedIdentity`，仍与写入资格分开。`RootShell.quote` 及已有频点常数复用；删除无调用的 `CellsPage.serving()` 和重复命令拷贝。原生编译集中到 `native/build.ps1`，根目录脚本仅转调，原有输出位置与入口保持可用。
-
-0.3 已完成的验证：
-
-- App 界面设置 SIM 1 的 LTE B3、SIM 2 的 NR SA + NSA n1 / n78，独立读取确认后恢复完整原始频段位。
-- 直接调用 APK 同一后端验证 SIM 1 RAT 28→16→28，SIM 2 RAT 92→80→92，SIM 2 NR mode 0→2→0；完整偏好与原值一致。这部分不是 App 按钮触发。
-- App 设置 SIM 2 LTE EARFCN 1650 / PCI 321，独立 GET 确认锁定配置；App 解除后再次读到 LTE 空列表。同期系统界面显示的是 5G NR 服务，不能据此宣布 LTE 目标驻留已验证。
-- 已出现真实 NR 系统观测：n1、ARFCN 422930、PCI 633、约 -116 dBm。这是读取证据，**不是 NR 小区锁或 NR ARFCN 锁定成功证据**，也不能直接补出未测得的 SCS。
-- `assembleDebug` / `lintDebug` 通过，lint 0 errors / 19 warnings。快照 136 项、输入校验 46 项、信号历史 22 项、原生纯协议 105 项通过。
-- 最终包已安装；三页与频段页均有真实截图，前台新时间戳采样、曲线绘点、切卡清历史、回执横竖旋转保留已观察。后台暂停本轮未单独计数验收，整套初始恢复 / 全部开放仍未完成真机验收。
-- 最终两卡偏好与 LTE / NR 小区状态均与各自基线一致；其中 NR 状态仍未知。双卡移动数据关闭，漫游设置为 0，无 cellular INTERNET 网络；原始流量计数不作为零计费证明。
-
-5G 小区锁和 NR ARFCN 锁定已有实现，但真实设置、配置回读、驻留、解除尚未完成整套验收。出现 NR 服务后，NR 锁状态 GET 仍是 ackOnly，不能据此恢复未知的原锁状态，因此本轮没有贸然追加 NR 小区写入。测试期间移动数据与漫游保持关闭；两张 SIM 都可参与可逆测试，必须分别保存原值并恢复。详细证据和后续更新统一维护在 `native/VALIDATION.md`。
-
-### 当前读取与分类约定
-
-- **0.4.6 QMI 补全**：每卡独立绑定 NAS，在共用 6 秒期限内依次查询 SYS `0x004D` → LOC `0x0043` → RF `0x0031` → SIG `0x004F` → SYS。前后订阅映射、服务身份及 RF 关联通过核验才补缺；单项可选查询失败不丢弃其他有效数据。SIG 不分配给缺少有效服务身份的邻区，也不借用旧电话时间绘制曲线。
+- **QMI 补全**：每卡独立绑定 NAS，在共用 6 秒期限内依次查询 SYS `0x004D` → LOC `0x0043` → RF `0x0031` → SIG `0x004F` → SYS。前后订阅映射、服务身份及 RF 关联通过核验才补缺；单项可选查询失败不丢弃其他有效数据。SIG 不分配给缺少有效服务身份的邻区，也不借用旧电话时间绘制曲线。
 - **频段与 SCS**：合法系统频段保留；频段与频点冲突时优先使用关联正确的 RF，或唯一频点候选。重叠候选无法确认时表单频段留空，由用户确认；显示、邻区匹配和命令采用同一有效频段。基带 SCS 仅供参考，不等于已验证适合锁定命令。
-- **0.4.7 周边分类**：所选卡的有效电话 / NAS 邻区与合格同频候选进入周边列表；其余有效观测进入默认折叠的“其他观测”，不计入周边数。纯频点提示隐藏，身份冲突不强行合并；条目隐藏“SIM 归属未知”文字，但保留底层归属判断。两卡独立处理，没有卡 2 只能 LTE 的限制。
+- **周边分类**：所选卡的有效电话 / NAS 邻区与合格同频候选进入周边列表；其余有效观测进入默认折叠的“其他观测”，不计入周边数。纯频点提示隐藏，身份冲突不强行合并；条目隐藏“SIM 归属未知”文字，但保留底层归属判断。两卡独立处理，没有卡 2 只能 LTE 的限制。
+- **去重与展示**：`RadioCell.sameCell / surrounding / isNeighborOf` 统一判断去重和周边资格。不同完整身份、TAC 或已确认频段不合并；服务选择先比较可信映射，再比较 NR / LTE 与身份完整度，避免未映射 NR 抢占可信 LTE。隐藏来源文字不删除底层 details 或诊断信息。
 - **覆盖范围**：LTE 已有异频点、异频段真机证据；NR 解码支持多载波，但既有调查中的真包不能证明 NR 异频覆盖。DIAG 仍仅接受 `0xB97F` 2.7、约 3 秒短会话；延长缓存不能补出基带未返回的数据。服务匹配只提供候选，不证明某张 SIM 独占该观测。
 
-最新归档验证摘要（2026-10-15，沿用既有记录，本次文档整理未重新执行）：
-
-| 版本 | 已记录的检查 | 边界 |
-|---|---|---|
-| 0.4.6 / code 10 | 主机 706 项、原生 QMI mock 105 项及读取 / DIAG 内存自检、Android 页面 54 项；实际 App UID 在权限全允许 / 全拒绝下各 20 项；构建及 lint 通过（0 errors / 23 warnings） | 旧错误频段通过脱敏格式和模型夹具回归；未在真机再次出现，不等于现场复现 |
-| 0.4.7 / code 11 | 主机 721 项、Android 页面 / 命令 76 项、分类修复阶段实际 App UID 检查 39 项；构建及 lint 通过（0 errors / 24 warnings） | 后续文字隐藏重跑页面检查并确认真机显示，未重跑 39 项实际 UID 检查 |
-
-验证设备不支持双卡同时 5G；双 NR 载波仅有模型 / 解码回归。实际 NSA、NR 锁定 / 解除 / 驻留、SCS 锁定效果、长时间稳定性和其他机型仍未完成验收。上述读取和页面检查不执行网络设置 SET，不能作为写入成功证据。
+- **邻区容错**：逐包拒绝未知版本或损坏内容，保留其他有效包；每批最多 32 包 / 96 KiB / 512 个解码小区，缓存 15 秒。诊断摘要通过现有 TXT 导出，不新增后台采集。
 
 ## 2. 目录与职责
 
@@ -61,12 +32,14 @@ CellLock 是面向已 Root 高通 Android 手机的本地网络设置工具，�
 | `CellsPage.java` | 前台读取调度、服务 / 邻区、来源与缓存、信号曲线；交给统一协调器读取 |
 | `RadioReader.java`、`SimInfo.java` | 按接口选路、真实 SIM 映射、回调取消与设备能力退避 |
 | `RootShell.java`、`RootPhone.java` | 串行有界 Root 进程、电话服务 helper；不修改权限或系统开关 |
-| `MeasurementDecoder.java` | 有界 UIM/NAS 与 NR 2.7 解码，拒绝未知版本或不完整身份 |
+| `MeasurementDecoder.java` | 有界 UIM/NAS 与 NR 2.7 解码，隔离未知版本与损坏包，保留有效测量 |
 | `LockPage.java` | 小区 / 频段 / 制式表单，硬件频段芯片，参数校验，生成待确认命令 |
 | `DevicePage.java` | 机型 / SoC / 版本、硬件频段、权限、后端状态与记录 |
 | `Backend.java` | 订阅 ID 转物理卡槽，调用随包 ELF，收集与解析 JSON |
 | `Models.java` | 制式、状态、逐项操作结果及记录模型；未知状态和偏好 / 硬件分离 |
-| `Snapshots.java` | 每张卡首次完整偏好快照、恢复命令生成、最终全值匹配 |
+| `Snapshots.java` | 分 SIM 多份配置快照、旧格式兼容、恢复命令与全值匹配 |
+| `SavedCells.java`、`SavedRecords.java`、`LockPlan.java` | 小区收藏、记录持久化与目标频段并集 |
+| `BandDefaults.java`、`native/celllock_efs.c`、`efs_protocol.inc` | 固定 EFS 证据、清理编排与单次重载 |
 | `RadioCell.java`、`Bands.java` | 系统 CellInfo 简化、频段查找与 SCS 建议；建议值不是测量值 |
 | `SimStatus.java` | 区分电话未授权、SIM 信息读取受限、无卡和可用订阅 |
 | `SignalHistory.java`、`SignalChartView.java` | 真时间戳去重、滚动窗口、断线、Canvas 绘图 |
@@ -86,14 +59,14 @@ flowchart LR
   C[CellsPage] --> R[RadioReader]
   R --> P0[普通电话接口]
   R --> P1[RootPhone / QMI NAS / NR DCI]
-  C -->|已确认归属与新测量的目标| L[LockPage]
+  C -->|当前合格候选或用户核对的历史目标| L[LockPage]
   L -->|命令草稿，不含 slot| A[MainActivity 确认]
   A --> S[Session 单任务]
   S -->|核验订阅与 slot| B[Backend / su]
   B --> N[原生 CLI / QMI QRTR]
   N -->|JSON 状态与回执| S
   S -->|按订阅缓存、界面重派| A
-  S --> P[Snapshots 完整初始配置]
+  S --> P[Snapshots 已保存的完整配置]
 ```
 
 公开源码不包含本地 `AGENTS.md` 和私人设备记录；接手时以本交接文档及 `native/VALIDATION.md` 为基线，先读取新设备状态，避免沿用旧机器配置。
@@ -121,34 +94,21 @@ flowchart LR
 执行写入的顺序是：
 
 1. 确认弹窗捕获 subscription ID、slot 和命令副本；确认时再次核验目标。
-2. Session 每条命令前后都核验订阅是否仍对应原 slot；映射改变就停止后续命令并保留未知结果。
-3. 写前先执行 `state`。只有取得完整可恢复快照，才执行后续写入。
-4. 执行固定命令，保存原始回执；一般操作遇失败停止，初始恢复会继续收集各恢复项结果。
-5. 最后重新读取。初始恢复额外执行 `Snapshots.matches()`，不能只看每一步的 ACK。
+2. Session 的 QMI 命令前后核验真实订阅，固定 EFS 操作前同样核验。SSR 是终结步骤，发送后不做后置 verifySlot 或服务恢复读取；映射改变在重载前停止后续操作。
+3. 写前先执行 `state`，按路线核验必要字段；快速开放要求硬件范围，完整清除不以硬件列表阻断。可选备份失败不写入，未知项保留未知。
+4. 执行固定命令，保存原始回执；一般操作遇失败停止，快照恢复会继续收集各恢复项结果。
+5. 普通写入/快速清除最后重新读取，快照恢复另执行 `Snapshots.matches()`。完整清除仅在重载前核对必要步骤，重载后立即结算未核验，不自动最终回读。
 6. 主线程派发 Completion，按 ID 防止重复消费；Activity 回到前台或旋转后继续接收结果。
 
 旋转时 Activity 不取消已经开始的基带操作。旧界面 detach，executor 允许在途任务收尾；新界面 attach，继承 busy 和回执。可见的结果弹窗另存 Bundle，旋转后可重建。不要把耗时 `su` 调用放回主线程。
 
-Session 不跨进程死亡持久化。进程被系统终止后，需要重新读取状态，未完成任务的回执不会自动恢复；SharedPreferences 中的完整初始快照仍保留。
+Session 不跨进程持久化，未完成任务不得重放。完整清除在 SSR 前提交 reloadPending 标记，重载后清两卡状态、能力及测量缓存；页面切换、恢复前台或进程重建不自动恢复读取。用户手动刷新或发起新任务才解除待刷新标记，并重新核验真实 SIM；普通快照保留。
 
 ## 5. 原生 CLI 与协议
 
 `libcelllock_qmi.so` 虽然扩展名为 `.so`，实际是可执行 ELF，用于随 APK 打包；不是通过 JNI 加载。必须保留 `extractNativeLibs=true`，从 `nativeLibraryDir` 的实际文件路径执行。
 
-| 命令 | 作用 |
-|---|---|
-| `state <slot>` | 只读状态及硬件能力 |
-| `cell-lte <slot> <earfcn> <pci>` | LTE 小区锁 |
-| `cell-nr <slot> <arfcn> <pci> <band> <scs>` | NR PCI 小区锁 |
-| `freq-nr <slot> <arfcn> <scs>` | NR ARFCN 频点锁 |
-| `cell-clear <slot> lte\|nr\|all` | 解除所选 QMI 小区锁 |
-| `band-lte <slot> <列表\|all>` | LTE 频段 |
-| `band-nr <slot> sa\|nsa\|both <列表\|all>` | NR SA / NSA 频段 |
-| `band-gsm <slot> <列表\|all>` | GSM 850 / 900 / 1800 / 1900 |
-| `band-wcdma <slot> <列表\|all>` | WCDMA 频段 |
-| `rat <slot> <gsm,wcdma,lte,nr组合\|all>` | 网络制式 |
-| `nr-mode <slot> both\|nsa\|sa` | 5G 组网 |
-| `reset <slot>` | 开放硬件支持范围、SA+NSA，并请求清小区锁 |
+完整命令、参数与回执字段见 [原生后端说明](../native/README.md)，字段来源见 [SOURCES](../native/SOURCES.md)。
 
 `slot` 是物理卡槽 0/1，不是 Android subscription ID。列表是逗号分隔数字。LTE EARFCN 限 0–65535、PCI 0–503；NR ARFCN 0–3279165、PCI 0–1007；SCS 单位 kHz，只接受 15/30/60/120/240。普通 UI 命令不携带 slot，由 Session 统一插入；`Snapshots.restoreCommands()` 输出带 slot，MainActivity 转换后再交 Session，改接口时注意避免重复插槽。
 
@@ -163,13 +123,21 @@ Session 不跨进程死亡持久化。进程被系统终止后，需要重新读
 
 回执是一行 JSON。`ok` 表示本次目标通过回读；`mutated` 是尝试写入，`writes` / `accepted` 分别记录次数；`stage=unverified` 可能已有部分变更。状态包含 `lteCell`、`nrCell`、`pref`、`hardware`，缺失 hardware 可从同订阅先前结果继承，不能跨卡继承。
 
-## 6. 快照与恢复必须守住的约定
+## 6. 快照与清锁约定
 
-快照键包含物理 slot 和 subscription ID；schema 2 要求完整、可恢复的偏好，包括 16 位十六进制 `legacyMask`。首次完整读取用同步 `commit()` 保存；后续写前再次检查已保存快照可用。
+快照键沿用 `snapshot_<slot>_<subscriptionId>`，新增项使用 schema 3，保留 schema 2 和旧单对象兼容。频段、制式、组网可为显式 null，锁状态以 known/type 记录；LTE 保存完整列表，NR PCI 保存完整 bands，NR 频点保存完整 ARFCN/SCS 列表。旧快照没保存的锁状态不清除，其他 NR 类型只记录。恢复后完整比对原值，LTE/NR 列表比较保留重复数量并允许重排。损坏列表不覆盖；删除最后一份保留空数组。只有只读首次完整读取会自动保存，写入无需已存在快照。
 
-“恢复初始设置”恢复频段、RAT、NR mode，并请求清小区锁；**没有保存或恢复之前的小区锁目标**。NR SA 与 NSA 原值不同，必须分别恢复。完整比较保留硬件不支持位，例如 B250 / B252 / B255，不可先与硬件掩码求交集。GSM / WCDMA 共用 legacy mask，写单一族需保留其他族及未命名位；最终 raw mask 不一致就不能称原样恢复。
+小区记录使用 `cells_<slot>_<subscriptionId>`、schema 1；配置和小区共用 `SavedRecords` 的数组兼容、备注、删除及 commit，参数校验分别留在 `Snapshots` / `SavedCells`。记录保存最近观测时间，历史填表不修改实时模型时效。持久归属沿用 slot/sub，不记录 ICCID/IMSI。
 
-“全部开放”使用硬件支持范围，不等于初始状态。每个目标——LTE、NR SA、NR NSA、legacy、RAT、NR mode、LTE / NR 小区锁——均须独立验证，不能因为频段改好了就报告整个恢复成功。
+`Task` 固定 SIM/命令并保存 backup/appendBand 选择，三个小区入口共用确认和 Session。备份在追加频段之前，失败停止；直接分支不自动创建快照。`LockPlan` 以执行前完整允许集合并集追加目标，保留硬件外原始位；目标已允许时不写频段。不修改 RAT/NR mode。
+
+`open-bands`、`clear-quick`、`clear-complete`是Java任务，不调用旧混合reset。两种清锁复用Task的备份三选、Session/RootShell串行、OperationReport编码与现有快照。`BandDefaults`保留类名和证据读取，移除登记职责；clearEfs返回显式完成门槛，不凭void正常返回或整个report.ok()放行。固定项不存在按errno2处理，全部缺失或LTE结构已为零且无其他变更时不SYNC；306仍为失败。任何必要删除、PUT或同步未确认均不发送SSR，不自动回滚。NR clear accepted/writes均为1且result/error为0、stage unknown时保留接受未知，不据ok=false重复发送或冒充请求拒绝。完整编排通过可替换的既有请求/命令边界做内存验证，生产仍使用原RootShell与Backend，不另写协议客户端。
+
+固定路径表在efs_protocol.inc，主订阅清四频段项、mode_pref、LTE/NR PCI、NR频点、GSM及WCDMA频点；副订阅仅处理明确列出的四频段项、mode_pref、NR频点和WCDMA PSC项，不机械拼后缀。未有明确副订阅映射的其他项报告未知，不扩大为双卡全删。LTE restrict仅在原文件存在且GET为固定36字节布局时按已核对PUT38清零，已零不写、缺失不新建、未知长度拒绝覆盖；同步后GET确认全零。各项真机覆盖见 [验证记录](../native/VALIDATION.md)；LTE restrict 实际 PUT、GSM/WCDMA 活动锁、副订阅已有 NR 频点文件的删除仍未验证，不能承诺通用。EFS传输沿用22秒外层、18秒原生看门狗和5秒回包期限及安全注销保护；SSR仅固定reload-once，不开放任意帧/路径/内容。
+
+“读取配置”经确认后恢复快照中已知的频段、RAT、NR mode及小区锁，未知项跳过；schema2没有保存的小区状态不会被清除或伪造。NR SA 与 NSA 原值不同，必须分别应用。完整比较保留硬件不支持位，例如 B250 / B252 / B255，不可先与硬件掩码求交集。GSM / WCDMA 共用 legacy mask，写单一族需保留其他族及未命名位；最终 raw mask 不一致就不能称原样恢复。
+
+“开放全部支持频段”只调整频段，保留 RAT、NR mode 及小区锁；快速清除另请求解除运行时锁。各项独立核验，频段成功不能代替清锁成功。原生旧 reset 仍保留混合语义，不在 App 暴露。
 
 `nrCell.ackOnly=true` 只是“GET 返回成功结果 TLV、却没有可解码状态”。它不能解释为 NONE。PCI / ARFCN 设置后的参数不完整、清除后仍 ackOnly，都必须保持未知或未全部确认。不要为了让界面变绿而改成默认未锁定。
 
@@ -185,7 +153,7 @@ Set-Content -LiteralPath local.properties -Value ('sdk.dir=' + $sdk.Replace('\',
 ./gradlew.bat clean assembleDebug lintDebug
 ```
 
-APK 在 `app/build/outputs/apk/debug/app-debug.apk`。首次安装使用开发签名；继续更新需保持签名，否则不能覆盖旧安装。卸载会丢失 App 保存的初始快照，应先恢复并导出记录。
+APK 在 `app/build/outputs/apk/debug/app-debug.apk`。首次安装使用开发签名；继续更新需保持签名，否则不能覆盖旧安装。卸载会丢失保存的配置快照和小区记录，应先核对恢复并导出必要信息。
 
 日常开发可省略 `clean`。交付前完整重打包，避免 APK 增量更新留下已失效条目的空隙；不要通过移除读取组件来缩减这类打包空间。
 
@@ -204,13 +172,13 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 可选 `-Captures <本地 device-paths 目录>` 额外验证既有脱敏真机数据。固定测试时钟只在 `tests/host/` 使用，不打入 APK；此测试不代替系统时钟、权限或 Binder 的真机回归。
 
-Root 子进程退出保护可运行 `./tests/run-root-shell.ps1 -JsonJar $jsonJar -Jdk <JDK目录>`（需要本机 GCC，沿用上述 JSON 测试运行库）。脚本在临时目录编译假 `su.exe`，覆盖正常回包、业务错误、注销失败、watchdog 和信号退出，以及手动重试不能解除写入保护；不调用真实 Root 或基带。
+记录与确认弹窗共用 `OperationReport` / `ResultItem`，界面不解析中文回执推断状态。只读 Root 请求可有限重试一次，可能已发送的写请求不重发。
+
+Root 会话与退出保护可运行 `./tests/run-root-shell.ps1 -JsonJar $jsonJar -Jdk <JDK目录>`（需要本机 GCC、PATH 中 Git for Windows 的 `sh.exe`，沿用上述 JSON 测试运行库）。脚本在临时目录编译假 `su.exe`，覆盖复用、并发、授权失效、重试上限、写入不重发、正常回包、业务错误、注销失败、watchdog 和信号退出，以及手动重试不能解除基带访问保护；不调用真实 Root 或基带。
 
 `ReadingPolicyTest` 覆盖 DIAG 入口选择，以及电话已有服务身份时 NAS 补入异频邻区、去重、部分字段与冲突身份保留；`RadioCellTest` 包含 n77/n78 重叠频段、显示 / 填表一致性及可信服务优先；`MeasurementDecoderTest` 核对 NAS 标识的端序、占位值和邻区归属边界。`native/test_read` 与 `test_diag` 都只做内存自检，不发送基带请求。
 
-0.4.6 的 `NasVerificationTest` 覆盖错误频段校正、合法频段保留、重叠候选、前后服务身份核验、无效信号、单项查询失败及双卡 NR 独立解码；默认重放 `tests/fixtures/nas-verified.redacted.jsonl` 的两卡真机格式。夹具已将网络标识置零，不包含可识别的 CI/NCI/TAC/PLMN。
-
-0.4.7 由 `RadioCell.sameCell / surrounding / isNeighborOf` 统一判断显示去重和周边资格，`CellsPage` 将其他观测默认折叠，隐藏缺少 PCI 的纯频点提示和条目的“SIM 归属未知”后缀，底层信息保留。不同完整身份、TAC 或已确认频段的记录不合并；冲突服务保留待核对，同频候选仍按现有规则填表，不伪造 SIM 归属。主机检查覆盖双 NR 载波分别判断、冲突及过期副本；Android 页面检查覆盖折叠、切卡、数量、空记录及校正目标。
+`NasVerificationTest` 重放两卡脱敏格式及 n28 冲突样本，覆盖错误频段校正、合法频段保留、重叠候选、前后服务身份、无效信号、单项查询失败和双卡独立解码。数据边界见 [夹具说明](../tests/fixtures/README.md)。
 
 `UiFlowTest` 在 Android instrumentation 中实例化真实页面，用记录命令的 Host 检查重排后的 NR / LTE 小区、频点、解锁与频段参数，不执行命令；还检查表单重建、精简字段以及 320dp / 130% 字体下的信号文字。先用同一默认 debug 签名安装当前 APK，再运行下列命令；脚本使用 SDK 35 / Build Tools 34.0.0 和本机默认 debug keystore，临时测试包运行后卸载，不打入正式 APK。仅连接目标设备，测试会停止目标应用：
 
@@ -218,17 +186,13 @@ Root 子进程退出保护可运行 `./tests/run-root-shell.ps1 -JsonJar $jsonJa
 ./tests/run-ui.ps1 -Sdk $env:ANDROID_SDK_ROOT
 ```
 
-0.4.8 的默认脚本还执行 `DialogFlowTest`：启动真实 Activity 和弹窗，检查恢复选择 / 确认 / 结果 / 操作记录的旋转重建、详情与滚动恢复、底部按钮可达，不确认写入；完成窗口与临时日志清理后才发送测试结束回执。`UiFlowTest` 新增合并能力控件、动态清锁名称及其他观测说明上下各 12dp 检查。
+默认脚本还执行 `DialogFlowTest`：启动真实 Activity 和弹窗，检查恢复选择 / 确认 / 结果 / 操作记录的旋转重建、详情与滚动恢复、底部按钮可达，不确认写入；完成窗口与临时日志清理后才发送测试结束回执。`UiFlowTest` 新增合并能力控件、动态清锁名称及其他观测说明上下各 12dp 检查。
 
 `ModemFlowTest` 是显式真实写入验收，默认脚本不运行。只在已授权且确认可恢复的设备执行：要求 SIM 1 映射可信、完整原值已保存、SA / NSA 原值相同且支持 n1 / n41；会选择与原值不同的 n1 或 n41，检查独立频段写入后控件仍可用、恢复原快照、请求清锁及全部开放，并在 finally 精确恢复测试前偏好、完整回读。清理阶段先关闭并等待 Session 的整个执行队列结束，再恢复测试前偏好；不会在 40 秒验收等待超时后与后台写入并行恢复，因此清理可能超过该等待时间。单项恢复失败或抛异常时继续尝试其余项目，最后统一回读并汇总失败；线程中断也不能跳过排队等待，原中断标志在清理结束后恢复。测试不创建新的小区锁，不能恢复不可读取的既有锁定目标，不适合作为任意机型的通用测试。重新安装 `tests/ui-test/build/ui-checks.apk` 后显式运行 `adb shell am instrument -w com.celllock.app.tests/com.celllock.app.ModemFlowTest`，结束后卸载 `com.celllock.app.tests`，外部再独立比对双卡原值、快照与系统开关。本轮现场结果仅保存在本地诊断目录，不纳入源码仓库。
 
 恢复清理的异常路径可用 `tests/run-modem-recovery.ps1 -AndroidJar <android.jar> -JsonJar <JSON-java.jar> -Jdk <JDK目录>` 单独在主机验证。先编译当前 Debug Java 类；该测试直接调用 `ModemFlowTest` 的清理实现，模拟待完成写入、线程中断、单项拒绝与抛异常，并检查后续恢复和最终回读，不安装测试 APK、不调用 Root 或基带。
 
 测试 APK 还包含显式只读真机验收 `DeviceReadingTest`，默认 UI 脚本不会运行它。单独重新安装 `tests/ui-test/build/ui-checks.apk` 后，运行 `adb shell am instrument -w com.celllock.app.tests/com.celllock.app.DeviceReadingTest`：使用实际 App UID、现有权限、Root 及 `RadioReader`，逐卡核对新 QMI 查询、服务身份、频段补入及 DIAG 候选；真实数据也进入页面，检查数量、折叠和候选点击。有完整身份冲突时要求记录分离且不可误用，不强迫合并。完成后卸载 `com.celllock.app.tests`；权限组合验证应在外部记录并恢复原有授权、标志与 AppOps，测试类本身不修改权限或网络设置。它要求被测设备接口可用且采样期间服务稳定，不是通用设备能力判定器。
-
-0.4.4 的页面副标题、SIM 来源后缀、当前连接详情及采集来源说明已隐藏；邻区保留来源和信号质量，底层 `details` 与诊断能力保持。锁定页按制式 / 频段 / 小区、NR / LTE 排序，读取失败仍显示未知。NAS 仅补充新观测，不覆写已有电话数据；相同制式、频点、PCI 且身份不冲突时去重，纯频点提示不重复已有小区。服务选择先比较可信映射，再比较 NR / LTE 和身份完整度，避免补读 NR 抢占已映射 LTE。
-
-0.4.5 邻区隐藏系统 / Root 电话来源的可见文字与无障碍来源播报，仍保留原始数据用于诊断。小区采集进行中或被设置任务暂停时显示提示；新鲜观测不因普通刷新禁用，过期观测继续拒绝填表。Android 检查补入真实 Root 电话邻区夹具，以及离页后观测变旧、回页禁用和读取 / 设置暂停提示，避免仅用 DIAG 夹具漏测来源。
 
 `PermissionFlowTest` 在 Android runtime 调用当前 APK 的权限判断及引导方法，用内存偏好与测试上下文检查分步授权和空结果不再手动重读，不调用系统授权或改变设置。完成 APK 构建后可单独运行（测试类不打入 APK）：
 
@@ -248,36 +212,9 @@ adb shell rm -f /data/local/tmp/celllock-permission-test.dex
 
 以上默认单设备；多设备连接时为每个 adb 命令指定目标。测试 helper 使用系统上下文初始化 Android 资源；MIUI 可能输出主题文件缺失日志，以退出码 0 和最终 PASS 为通过依据。
 
-参数、曲线与 SIM 状态测试可直接在 PC JDK 运行：
+早期独立 javac / dex 测试命令保存在 [历史验证记录](../native/VALIDATION.md) 的“早期手工测试入口”中；当前优先运行本节脚本，旧快照编译示例缺少现有依赖，不能直接照抄。
 
-```powershell
-$javac = Join-Path $env:JAVA_HOME 'bin/javac.exe'
-$java = Join-Path $env:JAVA_HOME 'bin/java.exe'
-New-Item -ItemType Directory -Force tests/local-classes | Out-Null
-& $javac -encoding UTF-8 -d tests/local-classes app/src/main/java/com/celllock/app/InputValidator.java tests/InputValidatorTest.java app/src/main/java/com/celllock/app/SignalHistory.java tests/SignalHistoryTest.java app/src/main/java/com/celllock/app/SimStatus.java tests/SimStatusTest.java
-& $java -cp tests/local-classes com.celllock.app.InputValidatorTest
-& $java -cp tests/local-classes com.celllock.app.SignalHistoryTest
-& $java -cp tests/local-classes com.celllock.app.SimStatusTest
-```
-
-快照测试依赖 Android `org.json`，不能用 SDK 的 stub jar 直接当桌面运行库。可将当前模型和测试编译为 dex，在 Android runtime 执行；这只运行内存逻辑，不调用后端：
-
-```powershell
-$sdk = $env:ANDROID_SDK_ROOT
-$javac = Join-Path $env:JAVA_HOME 'bin/javac.exe'
-$java = Join-Path $env:JAVA_HOME 'bin/java.exe'
-$jar = Join-Path $env:JAVA_HOME 'bin/jar.exe'
-$androidJar = Join-Path $sdk 'platforms/android-35/android.jar'
-$d8 = Join-Path $sdk 'build-tools/35.0.0/lib/d8.jar'
-New-Item -ItemType Directory -Force tests/snapshot-classes | Out-Null
-& $javac -encoding UTF-8 -cp $androidJar -d tests/snapshot-classes app/src/main/java/com/celllock/app/Models.java app/src/main/java/com/celllock/app/Snapshots.java tests/SnapshotsTest.java
-& $jar --create --file tests/snapshot-classes.jar -C tests/snapshot-classes .
-& $java -cp $d8 com.android.tools.r8.D8 --lib $androidJar --min-api 30 --output tests/snapshot-tests.jar tests/snapshot-classes.jar
-adb push tests/snapshot-tests.jar /data/local/tmp/celllock-snapshot-tests.jar
-adb shell 'CLASSPATH=/data/local/tmp/celllock-snapshot-tests.jar app_process /system/bin com.celllock.app.SnapshotsTest'
-```
-
-原生测试已由 `build-native.ps1 -BuildTests` 生成。它用 mock transport 替代真实 QRTR，可直接运行：
+原生测试由 `build-native.ps1 -BuildTests` 生成，四项均不访问基带：test_qmi 使用 mock transport，test_diag 检查内存缓冲，test_read 检查字段与脱敏，test_efs 检查固定请求编码。以下以 QMI 为例，其他测试同样可推送到 Android 执行：
 
 ```powershell
 adb push native/test_qmi /data/local/tmp/celllock-test-qmi
@@ -285,24 +222,17 @@ adb shell chmod 755 /data/local/tmp/celllock-test-qmi
 adb shell /data/local/tmp/celllock-test-qmi
 ```
 
-也可在带 GCC 的 Linux 环境从 `native/` 编译 `test_qmi.c`，用 `-std=c11 -O2 -Wall -Wextra -Werror` 后执行。纯测试通过不等于手机已支持所有写命令。
+QMI / EFS 内存自检也可在主机 GCC 编译执行，使用 `-std=c11 -O2 -Wall -Wextra -Werror`。DIAG / 读取测试依赖 dlfcn.h、Linux QRTR 等头文件，Windows GCC 不能直接编译。纯测试通过不等于设备支持真实写入。
 
-## 8. 后续开发优先级
+## 8. 后续验证与交付
 
-1. **完成真实 NR 验证**：重新获取当前目标及其完整参数，核对 ARFCN 含义和 SCS；分别记录 SET、完整 GET、实际驻留、解除、最终原值。已有 n1 观测不要写死为未来默认值。
-2. **补足恢复整流程**：初始恢复与全部开放分别验证；当 NR 查询仍未知时，验证界面正确保留部分成功和待确认结果。保持移动数据关闭。
-3. **继续双卡 / 生命周期回归**：任务中旋转、后台返回、重复点击、权限撤回、SIM 映射变化、Root 拒绝、命令超时；回执不能串卡或丢失。
-4. **收敛 lint 与 UI**：逐项复核 warnings；Root 电话隐藏 API 有明确跨 ROM 风险，失败必须回退，不能宣称通用支持。不同字体缩放 / 屏幕宽度，长频段列表和日志不能遮挡恢复入口。
-5. **更广机型适配**：先只读确认服务、消息与字段，再有条件开放写入；未知字段保留原始证据，不套旧 EFS 布局或自动修改基带环境。
+1. 继续验证当前 NR 保存 / 恢复 / 解除流程，分开判断配置回读、实际驻留与持久状态；不得把未知解释成无锁。
+2. 补齐完整清除的真实拒绝、超时、注销异常、冷开机，以及未建立持久锁类的验收；副订阅无明确映射的项保持未知。
+3. 持续检查双卡映射、任务中旋转、进程重建、权限撤回与 Root 会话失效，不重放在途写入，不串卡。
+4. 在其他设备与固件上先只读核对接口和布局，未知 EFS 内容拒绝覆盖；同时复核窄屏、字体缩放、长列表与 lint 警告。
 
-发布时更新 `versionCode` / `versionName`，重新构建 native 和 APK，运行纯测试及有影响的真机回归，将现场验证记录保存在已忽略的 `local-diagnostics/`，更新许可与来源，再打包源码。公开交付不包含 `local.properties`、签名私钥、个人路径、设备标识或未经整理的原始设备记录。
+交付前重新构建 native 和完整 APK，运行受影响测试，更新版本、来源与验证记录。现场原始证据保存在忽略的 local-diagnostics/；公开交付排除 local.properties、签名私钥、个人路径、设备标识及原始设备记录。
 
 ## 9. 许可与来源
 
-项目为 **GPL-3.0-only**，修改后发布 APK 时应同步提供相应完整源码、构建所需文件和许可证，保留来源说明。
-
-- QRTR 传输参考 [btsearch/bunnylock](https://github.com/btsearch/bunnylock)，固定提交 `a0dc51f85e2f34431dfc5f82a42b8b7482cb8790`。
-- QMI 编码参考 [Fronsipswu/qcom-band-menu](https://github.com/Fronsipswu/qcom-band-menu)，固定提交 `a66248e383f02899bab36a2401d8470d45e18ac9`。
-- 具体字段、错误码核对与未复制的厂商资料范围见源码 `native/SOURCES.md`。
-
-不使用或分发 Cellular-Pro 私有代码、授权逻辑或手机厂商 `libdiag.so`。当前软件无需会员服务、遥测或联网 SDK，后续开发保持这一产品约定。
+项目使用 GPL-3.0-only，发布 APK 时同步提供对应完整源码、构建文件和许可证。固定上游提交、协议核对和厂商资料边界统一维护在 [SOURCES](../native/SOURCES.md)。不分发 Cellular-Pro 私有代码、授权逻辑或设备厂商库，保持无会员、遥测与联网 SDK 的产品约定。
