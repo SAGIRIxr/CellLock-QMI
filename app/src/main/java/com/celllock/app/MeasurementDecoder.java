@@ -371,20 +371,46 @@ final class MeasurementDecoder {
         return details;
     }
 
-    static List<RadioCell> nrBatch(JSONObject result) throws Exception {
-        if (result.has("error")) return new ArrayList<>();
-        JSONArray logs = result.getJSONArray("logs");
-        if (logs.length() > 32) throw new IllegalArgumentException("诊断包数量超限");
-        LinkedHashMap<String, RadioCell> cells = new LinkedHashMap<>();
-        int bytes = 0;
-        for (int i = 0; i < logs.length(); i++) {
-            byte[] packet = hex(logs.getString(i));
-            bytes += packet.length;
-            if (bytes > 96 * 1024) throw new IllegalArgumentException("诊断数据超限");
-            for (RadioCell cell : nr(packet)) cells.put(cell.key(), cell);
-            if (cells.size() > 512) throw new IllegalArgumentException("诊断小区数量超限");
+    private static final class BatchLimit extends IllegalArgumentException { BatchLimit(String message){super(message);} }
+    static final class NrBatch {
+        final List<RadioCell> cells=new ArrayList<>();
+        int packets,bytes,valid,unsupported,damaged;
+        String reasons="";
+        boolean usable(){return valid>0;}
+        String summary(){return "收到 "+packets+" 包 / "+bytes+" 字节，解码 "+valid+"，未知版本 "+unsupported+"，损坏 "+damaged+"，去重后 "+cells.size()+" 个小区"+(reasons.isEmpty()?"":"；"+reasons);}
+    }
+    static NrBatch nrBatch(JSONObject result) throws Exception {
+        NrBatch batch=new NrBatch();
+        if(result.has("error")){batch.reasons="通道返回错误："+result.optString("error");return batch;}
+        JSONArray logs=result.optJSONArray("logs");
+        if(logs==null||logs.length()>32)throw new IllegalArgumentException("诊断批次封装或包数量无效");
+        batch.packets=logs.length();
+        // 先检查整批原始预算，避免未知版本或坏包绕过容量限制。
+        for(int i=0;i<logs.length();i++) {
+            Object raw=logs.get(i);if(!(raw instanceof String))throw new IllegalArgumentException("诊断包不是十六进制字符串");
+            int length=((String)raw).length();
+            if(length>131070||length>196608-batch.bytes*2)throw new IllegalArgumentException("诊断数据超限");
+            batch.bytes+=(length+1)/2;
         }
-        return new ArrayList<>(cells.values());
+        LinkedHashMap<String,RadioCell> cells=new LinkedHashMap<>();int decoded=0;
+        for(int i=0;i<logs.length();i++) {
+            String raw=logs.getString(i),reason="";
+            try {
+                byte[] packet=hex(raw);Bytes header=new Bytes(packet);
+                if(header.u16()!=packet.length||header.u16()!=0xb97f)throw new IllegalArgumentException("非法 NR 日志头");
+                header.skip(8);int minor=header.u16(),major=header.u16();
+                if(major!=2||minor!=7){batch.unsupported++;reason="日志 0xB97F 版本 "+major+"."+minor+" 未支持";}
+                else {
+                    List<RadioCell> parsed=nr(packet);decoded+=parsed.size();
+                    if(decoded>512)throw new BatchLimit("诊断小区总数超限");
+                    for(RadioCell cell:parsed)cells.put(cell.key(),cell);
+                    batch.valid++;
+                }
+            } catch(BatchLimit error){throw error;}
+            catch(IllegalArgumentException error){batch.damaged++;reason=error.getMessage();}
+            if(!reason.isEmpty()&&batch.reasons.length()<600)batch.reasons+=(batch.reasons.isEmpty()?"":"；")+"包 "+i+" "+reason+" ["+raw.substring(0,Math.min(64,raw.length()))+"]";
+        }
+        batch.cells.addAll(cells.values());return batch;
     }
 
     static List<RadioCell> nr(byte[] packet) {

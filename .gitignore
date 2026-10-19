@@ -32,3 +32,5 @@ app/src/main/jniLibs/
 tests/*-classes/
 tests/*.txt
 native/test_qmi_host
+
+native/test_efs

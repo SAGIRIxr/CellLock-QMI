@@ -62,7 +62,10 @@ final class ModemState {
     int[][] lteCells;
     boolean lteKnown;
 
-    boolean nrKnown, nrAckOnly;
+    boolean nrKnown, nrAckOnly, readAttempted;
+    BitSet nrBands;
+    int[][] nrArfcns;
+    JSONObject nrRecorded;
     int nrType = -1, nrPci = -1, nrBand, nrScs;
     long nrArfcn = -1;
 
@@ -78,16 +81,18 @@ final class ModemState {
 
     static ModemState parse(JSONObject json) {
         ModemState s = new ModemState();
+        s.readAttempted = true;
         JSONObject lte = json.optJSONObject("lteCell");
         if (lte != null && lte.optBoolean("known")) {
             s.lteKnown = true;
             JSONArray cells = lte.optJSONArray("cells");
             if (cells == null) s.lteKnown = false;
             int n = cells == null ? 0 : cells.length();
+            if (n > 64) { s.lteKnown = false; n = 0; }
             s.lteCells = new int[n][];
             for (int i = 0; i < n; i++) {
                 JSONObject c = cells.optJSONObject(i);
-                if (c == null || c.optInt("earfcn", -1) < 0 || c.optInt("earfcn", -1) > 65535 || c.optInt("pci", -1) < 0 || c.optInt("pci", -1) > 503) {
+                if (c == null || !integer(c.opt("earfcn"),0,65535) || !integer(c.opt("pci"),0,503)) {
                     s.lteKnown = false;
                     s.lteCells = null;
                     break;
@@ -97,6 +102,7 @@ final class ModemState {
         }
         JSONObject nr = json.optJSONObject("nrCell");
         if (nr != null) {
+            s.nrRecorded = nr;
             s.nrKnown = nr.optBoolean("known");
             s.nrAckOnly = nr.optBoolean("ackOnly");
             s.nrType = nr.optInt("type", -1);
@@ -105,6 +111,10 @@ final class ModemState {
                 s.nrPci = nr.optInt("pci", -1);
                 s.nrBand = nr.optInt("band");
                 s.nrScs = nr.optInt("scs");
+                s.nrBands = bits(nr, "bands");
+                if (!nr.has("bands") && s.nrBand > 0 && s.nrBand <= 512) {
+                    s.nrBands = new BitSet(); s.nrBands.set(s.nrBand);
+                }
             } else if (s.nrType == NR_LOCK_ARFCN) {
                 JSONArray list = nr.optJSONArray("arfcns");
                 JSONObject first = list == null ? null : list.optJSONObject(0);
@@ -114,15 +124,17 @@ final class ModemState {
                 }
             }
             if (s.nrKnown && s.nrType == NR_LOCK_PCI)
-                s.nrKnown = s.nrArfcn >= 0 && s.nrArfcn <= 3279165 && s.nrPci >= 0 && s.nrPci <= 1007
-                        && s.nrBand > 0 && s.nrBand <= 512 && validScs(s.nrScs);
+                s.nrKnown = integer(nr.opt("arfcn"),0,3279165) && integer(nr.opt("pci"),0,1007) && integer(nr.opt("scs"),15,240)
+                        && s.nrBands != null && !s.nrBands.isEmpty() && s.nrBands.length() <= 513 && validScs(s.nrScs);
             if (s.nrKnown && s.nrType == NR_LOCK_ARFCN) {
                 JSONArray list = nr.optJSONArray("arfcns");
-                s.nrKnown = list != null && list.length() > 0;
+                s.nrKnown = list != null && list.length() > 0 && list.length() <= 16;
+                s.nrArfcns = s.nrKnown ? new int[list.length()][] : null;
                 for (int i = 0; s.nrKnown && i < list.length(); i++) {
                     JSONObject cell = list.optJSONObject(i);
-                    s.nrKnown = cell != null && cell.optLong("arfcn", -1) >= 0 && cell.optLong("arfcn", -1) <= 3279165
+                    s.nrKnown = cell != null && integer(cell.opt("arfcn"),0,3279165) && integer(cell.opt("scs"),15,240)
                             && validScs(cell.optInt("scs", -1));
+                    if (s.nrKnown) s.nrArfcns[i] = new int[]{cell.optInt("arfcn"), cell.optInt("scs")};
                 }
             }
             if (s.nrType < 0 || s.nrType > 4) s.nrKnown = false;
@@ -181,13 +193,21 @@ final class ModemState {
     }
 
     String nrCellSummary() {
-        if (!nrKnown) return nrAckOnly ? "未锁定或无法读取" : "未知";
+        if (!nrKnown) return "未知";
         switch (nrType) {
             case NR_LOCK_NONE: return "未锁定";
             case NR_LOCK_PCI: return nrArfcn + " / PCI " + nrPci + " · n" + nrBand;
-            case NR_LOCK_ARFCN: return "频点 " + nrArfcn + " · " + nrScs + " kHz";
+            case NR_LOCK_ARFCN: return "频点 " + nrArfcn + " · " + nrScs + " kHz" + (nrArfcns != null && nrArfcns.length > 1 ? " 等 " + nrArfcns.length + " 项" : "");
             default: return "其他锁定方式（" + nrType + "）";
         }
+    }
+
+    static BitSet bandSelection(BitSet current, BitSet hardware) {
+        BitSet selected = new BitSet();
+        if (current == null || hardware == null || hardware.isEmpty()) return selected;
+        selected.or(current); selected.and(hardware);
+        if (selected.equals(hardware)) selected.clear();
+        return selected;
     }
 
     /** 当前偏好相对硬件支持的频段，用于“全部 / 已锁 N 个”的摘要。 */
@@ -222,10 +242,17 @@ final class ModemState {
         BitSet set = new BitSet();
         for (int i = 0; i < list.length(); i++) {
             int band = list.optInt(i, -1);
-            if (band <= 0 || band > 1900) return null;
+            int maximum = key.equals("lte") ? 256 : key.equals("nr") || key.equals("nrSa") || key.equals("nrNsa") || key.equals("bands") ? 512 : key.equals("wcdma") ? 19 : 1900;
+            if (!integer(list.opt(i),1,maximum) || key.equals("gsm") && band != 850 && band != 900 && band != 1800 && band != 1900) return null;
             set.set(band);
         }
         return set;
+    }
+
+    static boolean integer(Object value,long min,long max) {
+        if(!(value instanceof Number))return false;
+        Number number=(Number)value;long integer=number.longValue();
+        return integer>=min&&integer<=max&&number.doubleValue()==(double)integer;
     }
 
     private static boolean validScs(int scs) {
@@ -273,6 +300,11 @@ final class ModemResult {
         return result;
     }
 
+    boolean acceptedUnknown() {
+        try{JSONObject json=new JSONObject(raw);return !ok&&stage.equals("unknown")&&json.optInt("writes",0)>0&&json.optInt("accepted",0)==json.optInt("writes",0)&&json.optInt("result",-1)==0&&json.optInt("error",-1)==0;}
+        catch(Exception ignored){return false;}
+    }
+
     static String stepName(String name) {
         switch (name) {
             case "legacy": return "2G / 3G 频段";
@@ -290,15 +322,20 @@ final class ModemResult {
 final class ResultItem {
     final String name, status, detail;
     ResultItem(String name, String status, String detail) { this.name=name; this.status=status; this.detail=detail; }
-    boolean confirmed() { return status.equals("verified") || status.equals("unchanged") || status.equals("read"); }
+    boolean confirmed() { return status.equals("verified") || status.equals("unchanged") || status.equals("read") || status.equals("saved"); }
     String label() {
         switch (status) {
+            case "saved": return "已保存";
             case "verified": return "回读已确认";
             case "unchanged": return "无需操作";
             case "read": return "已读取";
             case "rejected": return "请求被拒绝";
             case "unverified": case "mismatch": return "回读与目标不一致";
             case "unknown": case "transport": case "interrupted": return "状态未确认";
+            case "skipped": return "未知，已跳过";
+            case "accepted": return "请求已接受";
+            case "not_applicable": return "不适用";
+            case "recorded": return "仅记录，不支持自动恢复";
             default: return "未完成";
         }
     }
@@ -311,25 +348,31 @@ final class OperationReport {
     final List<ResultItem> items = new ArrayList<>();
     String details = "";
     String restoreStatus = "";
+    boolean recoveryUnverified;
     OperationReport(String title, String target) { this.title=title; this.target=target; }
     void add(String name, ModemResult result) {
         if (result.items.isEmpty()) {
             String status=result.ok ? (result.stage.equals("state") ? "read" : result.mutated ? "verified" : "unchanged") : result.stage;
-            items.add(new ResultItem(name,status,result.message));
+            items.add(new ResultItem(name,status,result.acceptedUnknown()?"请求已接受；独立回读未确认效果，不重复发送。":result.message));
         } else items.addAll(result.items);
-        details += (details.isEmpty()?"":"\n\n") + name + "\n" + (result.raw.isEmpty()?result.stage+"："+result.message:result.raw);
+        detail(name,result.raw.isEmpty()?result.stage+"："+result.message:result.raw);
+    }
+    void detail(String name,String raw) {
+        details+=(details.isEmpty()?"":"\n\n")+name+"\n"+raw;
         if(details.length()>24000)details="较早回执已省略，可导出诊断查看近期完整回执。\n"+details.substring(details.length()-24000);
     }
+
     boolean ok() { return !items.isEmpty() && items.stream().allMatch(ResultItem::confirmed); }
     String outcome() {
-        if (ok()) return items.stream().allMatch(i->i.status.equals("read"))?"已读取":"已确认";
+        if (ok()) return items.stream().allMatch(i->i.status.equals("read"))?"已读取":items.stream().allMatch(i->i.status.equals("saved"))?"已保存":"已确认";
         if (items.stream().anyMatch(ResultItem::confirmed)) return "部分完成";
         if (!items.isEmpty() && items.stream().allMatch(i->i.status.equals("rejected"))) return "请求被拒绝";
         return items.stream().anyMatch(i->i.status.equals("unknown")||i.status.equals("transport")||i.status.equals("interrupted")) ? "结果未确认" : "未完成";
     }
     String dialogTitle() {
-        if(restoreStatus.equals("matched"))return ok()?"初始配置已恢复":"配置已恢复 · 仍有未完成项";
-        if(restoreStatus.equals("mismatch"))return "尚未完整恢复初始配置";
+        if(recoveryUnverified)return title+" · 恢复状态未核验";
+        if(restoreStatus.equals("matched"))return ok()?"已应用保存的配置":"配置已应用 · 仍有未完成项";
+        if(restoreStatus.equals("mismatch"))return "尚未完整应用保存的配置";
         return title+" · "+outcome();
     }
     String summary() {
@@ -338,11 +381,11 @@ final class OperationReport {
         return text.toString();
     }
     String encode() {
-        try { JSONArray rows=new JSONArray();for(ResultItem item:items)rows.put(item.json());return new JSONObject().put("title",title).put("target",target).put("items",rows).put("details",details).put("restoreStatus",restoreStatus).toString(); }
+        try { JSONArray rows=new JSONArray();for(ResultItem item:items)rows.put(item.json());return new JSONObject().put("title",title).put("target",target).put("items",rows).put("details",details).put("restoreStatus",restoreStatus).put("recoveryUnverified",recoveryUnverified).toString(); }
         catch(org.json.JSONException error) { throw new IllegalStateException(error); }
     }
     static OperationReport decode(String raw) {
-        try { JSONObject json=new JSONObject(raw);OperationReport report=new OperationReport(json.optString("title"),json.optString("target"));report.details=json.optString("details");report.restoreStatus=json.optString("restoreStatus");JSONArray rows=json.optJSONArray("items");if(rows!=null)for(int i=0;i<rows.length();i++){JSONObject row=rows.optJSONObject(i);if(row!=null)report.items.add(new ResultItem(row.optString("name"),row.optString("status","unknown"),row.optString("detail")));}return report; }
+        try { JSONObject json=new JSONObject(raw);OperationReport report=new OperationReport(json.optString("title"),json.optString("target"));report.details=json.optString("details");report.restoreStatus=json.optString("restoreStatus");report.recoveryUnverified=json.optBoolean("recoveryUnverified");JSONArray rows=json.optJSONArray("items");if(rows!=null)for(int i=0;i<rows.length();i++){JSONObject row=rows.optJSONObject(i);if(row!=null)report.items.add(new ResultItem(row.optString("name"),row.optString("status","unknown"),row.optString("detail")));}return report; }
         catch(org.json.JSONException error) { return null; }
     }
 }

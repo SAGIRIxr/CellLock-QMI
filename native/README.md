@@ -4,7 +4,7 @@
 
 ## 命令
 
-`slot` 为物理卡槽 `0` 或 `1`，由 App 从所选订阅映射。尖括号表示参数，不应原样输入。
+`slot` 为物理卡槽 `0` 或 `1`，由 App 从所选订阅映射。尖括号表示参数，不应原样输入。cell-lte / cell-nr 分别锁 LTE / NR PCI 小区，freq-nr 锁 NR 频点，cell-clear 解除对应运行时锁，band-* 设置频段，rat 设置制式，nr-mode 设置组网；state 只读状态及硬件能力。
 
 ```text
 state <slot>
@@ -22,6 +22,9 @@ reset <slot>
 restore-lte <slot> <逗号分隔完整原始频段|none>
 restore-nr <slot> sa|nsa|both <逗号分隔完整原始频段|none>
 restore-legacy <slot> <16位十六进制原始掩码>
+cell-lte-list <slot> <earfcn,pci,...>
+cell-nr-mask <slot> <arfcn> <pci> <bands> <scs>
+freq-nr-list <slot> <arfcn,scs,...>
 ```
 
 LTE EARFCN 范围为 0–65535，PCI 为 0–503；NR ARFCN 为 0–3279165，PCI 为 0–1007，SCS 为 15 / 30 / 60 / 120 / 240 kHz。参数必须来自实际目标；NR 小区接口本身不区分 SA / NSA，`nr-mode` 是独立配置。
@@ -48,14 +51,43 @@ stdout 为一行 JSON，字段以当前源码为准：
 
 NR `ackOnly=true` 表示查询只收到成功结果 TLV，没有可解码的锁定状态。它不会满足锁定或解除确认；初始未知时允许的尝试也不能作为适配完成的证明。多步写入可能部分成功，任何未通过的目标均应保留“未全部确认”与回执，不假定回滚完成。
 
-系统选择配置可能异步生效，后端在限定时间内重新查询。原生总期限为 25 秒，App 每次 Root 调用外层期限为 40 秒。写入成功只说明配置回读，不证明手机已驻留目标。
+QMI 系统选择配置可能异步生效，后端在限定时间内重新查询。QMI 原生总期限为 25 秒，App 对应 Root 调用外层期限为 40 秒；EFS 期限见下文。写入成功只说明配置回读，不证明手机已驻留目标。
 
-初始快照由 Java 层按卡槽和订阅保存。schema 2 要求完整偏好及原始 64 位 `legacyMask`；恢复后额外比较 LTE、NR SA / NSA、GSM、WCDMA 全部频段位、RAT、NR 模式与 legacy mask，不先与硬件做交集。清锁范围仅为 QMI 小区锁，不修改其他工具的 EFS 文件。
+配置快照由 Java 层按卡槽/订阅管理，新项 schema 3，兼容 schema 2 与旧单对象。保留原始完整频段位及已知/未知锁状态；完整恢复命令新增 `cell-lte-list <slot> <earfcn,pci,...>`（最多64项）、`cell-nr-mask <slot> <arfcn> <pci> <bands> <scs>`、`freq-nr-list <slot> <arfcn,scs,...>`（最多16项）。CLI 严格校验参数；LTE 与 NR 列表完整核对，允许顺序重排而不丢数量。旧单目标命令保留。NR PCI JSON 额外输出完整 bands 数组。
 
-## 构建与验证
+App 不再把旧 `reset` 暴露为清全或频段开放：开放仅写 band-*；快速清除在开放后依次执行现有 LTE/NR cell-clear，保留 RAT/NR mode。完整清除由 Java 在重载前执行 nr-mode both 及独立回读、已知 QMI LTE 小区锁清除、固定 EFS 清理、必要同步与核对，再发送一次固定 SSR；回执及安全退出处理结束即结算，不等待恢复或自动回读。两路均不使用默认登记或机型白名单。快照中 EFS 字节仅记录，不自动重放；固定操作范围见下文。
 
-小区读取使用独立的只读 `libcelllock_read.so`：`sims` 查询 UIM，`cells 0|1` 在同一 NAS 连接先绑定所选订阅，再读 SYS 0x004D → LOC 0x0043 → RF 0x0031 → SIG 0x004F → SYS 0x004D。读取总期限 6 秒；绑定失败不继续。仅保留已支持的 TLV，ICCID 仍脱敏。前后 SYS 用于 Java 层核对服务是否切换；RF 扩展 32 位频道优先，旧 16 位 NR 频道不能用于校正。具体行为和限制见 [开发交接文档](../docs/DEVELOPMENT.zh-CN.md)。
+## 只读组件
 
-在项目根目录运行 `build-native.ps1 -Ndk <NDK目录> -BuildTests`，或按主 [README](../README.md) 构建 App。编译统一由 `native/build.ps1` 执行，直接调用默认同时生成测试。`native/test_qmi` 是离线字节编码与状态判定测试；`test_diag` 检查缓冲区，`test_read` 检查 NAS 标识保留与 ICCID 脱敏，三者均不建立基带连接。
+`libcelllock_read.so` 通过 UIM 读取 SIM，通过严格绑定的 NAS 查询所选订阅。小区查询在共用 6 秒期限内执行 SYS → LOC → RF → SIG → SYS；绑定失败不继续，ICCID 脱敏。前后服务身份及射频关联由 Java 核验，旧 16 位 NR 频道不能用于频段校正。
 
-0.3 验证进度见 [VALIDATION.md](VALIDATION.md)。5G 小区 / ARFCN 锁定效果尚未实测。协议来源与固定提交由 [SOURCES.md](SOURCES.md) 记录。
+`libcelllock_diag.so` 只订阅设备级 NR 测量的固定 0xB97F 2.7 格式，不据此推断 SIM 归属。短会话依次停止订阅、释放客户端和反初始化；退出未确认时暂停后续基带操作。自编 DIAG / EFS ELF 在 Root 私有临时目录执行，正常退出清理，不复制厂商库或修改 linker 配置。
+
+## 固定持久项清理
+
+`libcelllock_efs.so` 仅接受以下动作，不接受路径、任意字节或 RAW DIAG：
+
+| 动作 | 范围 |
+|---|---|
+| `get-0`～`get-17`、`stat-0`～`stat-17` | 查询固定项，编号见 [efs_protocol.inc](efs_protocol.inc) |
+| `unlink-0`～`unlink-16` | 删除对应固定项；Java 仅选取所选订阅已明确映射的项 |
+| `put-lte-restrict` | 仅写固定 36 字节零结构；Java 核对原有布局，不创建缺失文件 |
+| `sync`、`sync-status <token>` | 同步并核对完成状态 |
+| `reload-once` | 单次 modem crash / SSR，影响双卡，不重发或等待恢复 |
+
+主订阅处理四个频段偏好、mode_pref、LTE / NR PCI、NR / GSM / WCDMA 频点项及 LTE 限制结构；副订阅仅处理已明确映射的四个频段偏好、mode_pref、NR 频点与 WCDMA PSC 项，不机械拼接后缀。必要删除、写入、同步或核对未完成，不发送重载；没有持久变更时跳过同步，仍只发送一次重载。退出未确认保持保护，不将断连当作成功。
+
+EFS 外层期限 22 秒、原生看门狗 18 秒、单次回包期限 5 秒。协议字段和依据见 [SOURCES](SOURCES.md)；真实验证、未知锁类及设备限制见 [验证记录](VALIDATION.md)。
+
+## 构建与测试
+
+从项目根目录运行 `./build-native.ps1 -Ndk <NDK目录> -BuildTests`，输出四个可执行 ELF 到 APK 的 arm64-v8a 目录。直接运行 `native/build.ps1` 默认在 native 目录生成四个 ELF 与四个测试。测试不打入 APK，也不连接基带：
+
+| 测试 | 检查范围 |
+|---|---|
+| `test_qmi` | mock transport、协议编码、列表 / 掩码、错误与回读判定 |
+| `test_diag` | 日志批次与内存缓冲边界 |
+| `test_read` | NAS 身份字段与 ICCID 脱敏 |
+| `test_efs` | 固定白名单、请求编码、长度与参数边界 |
+
+完整构建、主机 / Android 运行方法见 [开发交接](../docs/DEVELOPMENT.zh-CN.md)。纯测试不能证明厂商接口实际可用，已完成结果统一见 [验证记录](VALIDATION.md)。

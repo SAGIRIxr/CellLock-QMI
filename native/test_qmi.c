@@ -76,7 +76,7 @@ static ssize_t exchange(int fd, uint8_t *buf, size_t length, int timeout_ms, con
         else if (field == SET_LEGACY) modem.pref.legacy = le64(value);
     } else if (id == NAS_LTE_CELL_SET) {
         value = tlv(&request_frame, 1, &n); if (!value) abort(); modem.lte.count = value[0]; modem.lte.known = 1;
-        if (value[0]) { modem.lte.pci[0] = le16(value + 1); modem.lte.earfcn[0] = le32(value + 3); }
+        for (int i=0;i<value[0];++i) { modem.lte.pci[i] = le16(value + 1+i*6); modem.lte.earfcn[i] = le32(value + 3+i*6); }
     } else if (id == NAS_NR_CELL_SET) {
         value = tlv(&request_frame, 1, &n); if (!value) abort(); modem.nr.type = (int)le32(value); modem.nr.known = 1;
         if (modem.nr.type == NR_LOCK_PCI) {
@@ -85,11 +85,11 @@ static ssize_t exchange(int fd, uint8_t *buf, size_t length, int timeout_ms, con
             modem.nr.arfcn = le32(value + 6); memcpy(modem.nr.bands, value + 10, 64);
         } else if (modem.nr.type == NR_LOCK_ARFCN) {
             value = tlv(&request_frame, 0x11, &n); if (!value) abort();
-            modem.nr.arfcn_count = value[0]; modem.nr.arfcns[0] = le32(value + 1);
-            modem.nr.arfcn_scs[0] = SCS_KHZ[le32(value + 5)];
+            modem.nr.arfcn_count = value[0];
+            for(int i=0;i<value[0];++i){modem.nr.arfcns[i]=le32(value+1+i*8);modem.nr.arfcn_scs[i]=SCS_KHZ[le32(value+5+i*8)];}
         }
     }
-    Reply out; response_start(&out, id, 0, 0); uint8_t v[256] = {0};
+    Reply out; response_start(&out, id, 0, 0); uint8_t v[512] = {0};
     if (id == NAS_LTE_CELL_GET) {
         v[0] = modem.lte.count;
         for (int i = 0; i < modem.lte.count; ++i) { put16(v + 1 + i * 4, modem.lte.pci[i]); put16(v + 3 + i * 4, modem.lte.earfcn[i]); }
@@ -245,6 +245,12 @@ static void test_reset(void) {
     modem.nr.type = NR_LOCK_PCI; modem.nr.pci = 202; modem.nr.arfcn = 633984; modem.nr.scs = 30; bit_set(modem.nr.bands, 78); s = modem;
     CHECK(run_job(&j, &hw, &s) == 1 && lte_cell_clear(&s.lte) && nr_cell_clear(&s.nr) && s.pref.nr_mode == 0 && s.pref.rat == RAT_KNOWN);
     CHECK(writes_sent == writes_accepted && writes_sent == 8 && (s.pref.legacy & (1ull << 63)));
+    CHECK(!memcmp(s.pref.lte, hw.lte, 32) && !memcmp(s.pref.sa, hw.nr, 64) && !memcmp(s.pref.nsa, hw.nr, 64));
+    fresh(); s = modem; Pref before = s.pref;
+    modem.lte.count = s.lte.count = 1; modem.nr.type = s.nr.type = NR_LOCK_PCI;
+    j = (Job){.cmd = CMD_CELL_CLEAR, .lte = 1, .nr = 1};
+    CHECK(run_job(&j, &hw, &s) == 1 && lte_cell_clear(&s.lte) && nr_cell_clear(&s.nr));
+    CHECK(!memcmp(&s.pref, &before, sizeof before));
 }
 static void test_exact_and_compatibility(void) {
     fresh();Hardware nr_hw=hardware();State nr_state=modem;Job nr_job={.cmd=CMD_NR_MODE,.nr_mode=2};
@@ -289,7 +295,23 @@ static void test_exact_and_compatibility(void) {
     fresh();s=modem;j.combined=1;memset(j.mask,0,sizeof j.mask);bit_set(j.mask,41);
     CHECK(run_job(&j,&hw,&s)==1&&writes_sent==1&&observed_message==NAS_GET_SYS_SEL);
 }
+static void test_saved_locks(void) {
+    Job j; Hardware hw=hardware(); State s;
+    fresh();s=modem;char *lte[]={"test","cell-lte-list","0","1650,42,1850,43"};
+    CHECK(parse_job(4,lte,&j)&&j.count==2&&run_job(&j,&hw,&s)==1&&s.lte.count==2&&writes_sent==1);
+    unsigned temp=s.lte.pci[0];s.lte.pci[0]=s.lte.pci[1];s.lte.pci[1]=temp;temp=s.lte.earfcn[0];s.lte.earfcn[0]=s.lte.earfcn[1];s.lte.earfcn[1]=temp;
+    CHECK(lte_list_is(&j,&s.lte));s.lte.earfcn[0]++;CHECK(!lte_list_is(&j,&s.lte));
+    lte[3]="1650,42,";CHECK(!parse_job(4,lte,&j));lte[3]="1650";CHECK(!parse_job(4,lte,&j));lte[3]="1650,504";CHECK(!parse_job(4,lte,&j));
+    fresh();s=modem;char *nr[]={"test","cell-nr-mask","1","633984","202","41,78,257","30"};
+    CHECK(parse_job(7,nr,&j)&&run_job(&j,&hw,&s)==1&&bit_has(s.nr.bands,257)&&bit_has(s.nr.bands,41));
+    nr[5]="513";CHECK(!parse_job(7,nr,&j));nr[5]="none";CHECK(!parse_job(7,nr,&j));
+    fresh();s=modem;char *freq[]={"test","freq-nr-list","0","633984,30,158290,15"};
+    CHECK(parse_job(4,freq,&j)&&j.count==2&&run_job(&j,&hw,&s)==1&&s.nr.arfcn_count==2&&s.nr.arfcn_scs[1]==15);
+    freq[3]="633984,25";CHECK(!parse_job(4,freq,&j));freq[3]="3279166,30";CHECK(!parse_job(4,freq,&j));
+    fresh();s=modem;freq[3]="633984,30,158290,15";CHECK(parse_job(4,freq,&j));fail_message=NAS_NR_CELL_SET;fail_transport=ETIMEDOUT;
+    CHECK(run_job(&j,&hw,&s)==0&&writes_sent==1);
+}
 int main(void) {
-    test_arguments(); test_frames(); test_payloads(); test_jobs(); test_reset();test_exact_and_compatibility();
+    test_saved_locks(); test_arguments(); test_frames(); test_payloads(); test_jobs(); test_reset();test_exact_and_compatibility();
     printf("PASS: %u pure protocol checks (mock transport; no device/network access)\n", checks); return 0;
 }

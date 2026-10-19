@@ -63,15 +63,15 @@ final class DevicePage extends ScrollView {
         lastReadValue = row(backend, "上次读取", "—");
         backend.addView(ui.divider(), ui.fill(1));
         ui.gap(backend, 12);
-        backend.addView(ui.text("LTE 硬件频段", 12, Ui.INK));
-        ui.gap(backend, 6);
-        lteBands = ui.caption("待读取");
-        backend.addView(lteBands);
-        ui.gap(backend, 12);
         backend.addView(ui.text("5G NR 硬件频段", 12, Ui.INK));
         ui.gap(backend, 6);
         nrBands = ui.caption("待读取");
         backend.addView(nrBands);
+        ui.gap(backend, 12);
+        backend.addView(ui.text("LTE 硬件频段", 12, Ui.INK));
+        ui.gap(backend, 6);
+        lteBands = ui.caption("待读取");
+        backend.addView(lteBands);
         ui.gap(page, 17);
 
         LinearLayout permissions = ui.card(page);
