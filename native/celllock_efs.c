@@ -35,7 +35,7 @@ static void on_signal(int sig) { interrupted = sig; }
 static void on_alarm(int sig) {
     (void)sig;
     static const char output[] = "{\"success\":false,\"error\":\"cleanup\",\"stage\":\"watchdog_timeout\",\"message\":\"Vendor diagnostic library exceeded the 18 second process deadline\"}\n";
-    write(result_fd, output, sizeof(output) - 1);
+    if (write(result_fd, output, sizeof(output) - 1) < 0) { /* 信号处理中无法再报告 */ }
     _exit(124);
 }
 static void response_cb(unsigned char *data, int len, void *context) {

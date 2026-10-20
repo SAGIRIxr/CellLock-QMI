@@ -101,7 +101,7 @@ static void on_signal(int sig) {
         ? "{\"ok\":false,\"stage\":\"interrupted\",\"message\":\"操作中断，命令可能已生效，请重新读取状态\",\"mutated\":true}\n"
         : "{\"ok\":false,\"stage\":\"interrupted\",\"message\":\"操作中断，未写入基带\",\"mutated\":false}\n";
     if (nas_fd >= 0) close(nas_fd);
-    write(STDOUT_FILENO, text, strlen(text));
+    if (write(STDOUT_FILENO, text, strlen(text)) < 0) { /* 信号处理中无法再报告 */ }
     _exit(sig == SIGALRM ? 124 : 130);
 }
 
