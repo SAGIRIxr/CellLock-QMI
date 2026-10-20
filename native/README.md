@@ -61,7 +61,7 @@ App 不再把旧 `reset` 暴露为清全或频段开放：开放仅写 band-*；
 
 `libcelllock_read.so` 通过 UIM 读取 SIM，通过严格绑定的 NAS 查询所选订阅。小区查询在共用 6 秒期限内执行 SYS → LOC → RF → SIG → SYS；绑定失败不继续，ICCID 脱敏。前后服务身份及射频关联由 Java 核验，旧 16 位 NR 频道不能用于频段校正。
 
-`libcelllock_diag.so` 只订阅设备级 NR 测量的固定 0xB97F 2.7 格式，不据此推断 SIM 归属。短会话依次停止订阅、释放客户端和反初始化；退出未确认时暂停后续基带操作。自编 DIAG / EFS ELF 在 Root 私有临时目录执行，正常退出清理，不复制厂商库或修改 linker 配置。
+`libcelllock_diag.so` 只订阅设备级 NR 测量的固定 0xB97F 2.7 格式，不据此推断 SIM 归属。短会话依次停止订阅、释放客户端和反初始化；退出未确认时暂停后续基带操作。DIAG / EFS 程序复制到 Root 私有临时目录执行，退出时清理，不修改 linker 配置。
 
 ## 固定持久项清理
 
@@ -77,11 +77,11 @@ App 不再把旧 `reset` 暴露为清全或频段开放：开放仅写 band-*；
 
 主订阅处理四个频段偏好、mode_pref、LTE / NR PCI、NR / GSM / WCDMA 频点项及 LTE 限制结构；副订阅仅处理已明确映射的四个频段偏好、mode_pref、NR 频点与 WCDMA PSC 项，不机械拼接后缀。必要删除、写入、同步或核对未完成，不发送重载；没有持久变更时跳过同步，仍只发送一次重载。退出未确认保持保护，不将断连当作成功。
 
-EFS 外层期限 22 秒、原生看门狗 18 秒、单次回包期限 5 秒。协议字段和依据见 [SOURCES](SOURCES.md)；真实验证、未知锁类及设备限制见 [验证记录](VALIDATION.md)。
+EFS 外层期限 22 秒、原生看门狗 18 秒、单次回包期限 5 秒。协议字段参考见 [SOURCES](SOURCES.md)。
 
 ## 构建与测试
 
-从项目根目录运行 `./build-native.ps1 -Ndk <NDK目录> -BuildTests`，输出四个可执行 ELF 到 APK 的 arm64-v8a 目录。直接运行 `native/build.ps1` 默认在 native 目录生成四个 ELF 与四个测试。测试不打入 APK，也不连接基带：
+从项目根目录运行 `./build-native.ps1 -Ndk <NDK目录>`，四个可执行 ELF 输出到 `app/src/main/jniLibs/arm64-v8a`。加 `-BuildTests` 会在 `native/` 下额外生成四个测试程序，测试不打入 APK，也不连接基带：
 
 | 测试 | 检查范围 |
 |---|---|
@@ -90,4 +90,4 @@ EFS 外层期限 22 秒、原生看门狗 18 秒、单次回包期限 5 秒。�
 | `test_read` | NAS 身份字段与 ICCID 脱敏 |
 | `test_efs` | 固定白名单、请求编码、长度与参数边界 |
 
-完整构建、主机 / Android 运行方法见 [开发交接](../docs/DEVELOPMENT.zh-CN.md)。纯测试不能证明厂商接口实际可用，已完成结果统一见 [验证记录](VALIDATION.md)。
+`test_qmi` 与 `test_efs` 也可用主机 GCC 直接编译运行（CI 即如此），详见 [CONTRIBUTING](../CONTRIBUTING.md)。

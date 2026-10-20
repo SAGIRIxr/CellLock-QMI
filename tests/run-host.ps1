@@ -5,6 +5,8 @@ param(
     [string]$Captures
 )
 $ErrorActionPreference = 'Stop'
+$exe = if ($IsLinux -or $IsMacOS) { '' } else { '.exe' }
+$sep = [IO.Path]::PathSeparator
 foreach($file in @($AndroidJar,$JsonJar)){if(-not(Test-Path -LiteralPath $file)){throw "Missing test runtime: $file"}}
 $output = Join-Path $PSScriptRoot 'host-classes'
 New-Item -ItemType Directory -Force -Path $output | Out-Null
@@ -13,7 +15,7 @@ $inputs = @('Bands','Models','InputValidator','SignalHistory','SimStatus','Snaps
 $tests = @('InputValidatorTest','SignalHistoryTest','SimStatusTest','SnapshotsTest','SavedCellsTest','MeasurementDecoderTest','RadioCellTest','ReadingPolicyTest','NasVerificationTest','BandDefaultsTest')
 $inputs += $tests | ForEach-Object { Join-Path $PSScriptRoot "$_.java" }
 $inputs += Join-Path $PSScriptRoot 'host/android/os/SystemClock.java'
-& (Join-Path $Jdk 'bin/javac.exe') -encoding UTF-8 -cp "$JsonJar;$AndroidJar" -d $output @inputs
+& (Join-Path $Jdk "bin/javac$exe") -encoding UTF-8 -cp "$JsonJar$sep$AndroidJar" -d $output @inputs
 if($LASTEXITCODE -ne 0){throw 'Host tests did not compile'}
 foreach($name in $tests){
     $arguments=@()
@@ -22,6 +24,6 @@ foreach($name in $tests){
         $arguments += Join-Path $PSScriptRoot 'fixtures/nas-verified.redacted.jsonl'
         $arguments += Join-Path $PSScriptRoot 'fixtures/nas-n28-conflict.redacted.json'
     }
-    & (Join-Path $Jdk 'bin/java.exe') -cp "$output;$JsonJar;$AndroidJar" "com.celllock.app.$name" @arguments
+    & (Join-Path $Jdk "bin/java$exe") -cp "$output$sep$JsonJar$sep$AndroidJar" "com.celllock.app.$name" @arguments
     if($LASTEXITCODE -ne 0){throw "$name failed"}
 }

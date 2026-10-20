@@ -1,5 +1,12 @@
 plugins { id 'com.android.application' }
 
+// 发布签名：优先读取环境变量（CI），其次读取根目录的 keystore.properties（本地，已忽略）。
+def signingProps = new Properties()
+def signingFile = rootProject.file('keystore.properties')
+if (signingFile.exists()) signingFile.withInputStream { signingProps.load(it) }
+def signingValue = { String env, String key -> System.getenv(env) ?: signingProps.getProperty(key) }
+def releaseStore = signingValue('CELLLOCK_KEYSTORE', 'storeFile')
+
 android {
     namespace 'com.celllock.app'
     compileSdk 35
@@ -7,10 +14,38 @@ android {
         applicationId 'com.celllock.app'
         minSdk 30
         targetSdk 34
-        versionCode 13
-        versionName '0.4.9'
+        versionCode 14
+        versionName '1.0.0'
+        ndk { abiFilters 'arm64-v8a' }
     }
-    buildTypes { release { minifyEnabled false } }
+    signingConfigs {
+        if (releaseStore) {
+            release {
+                storeFile rootProject.file(releaseStore)
+                storePassword signingValue('CELLLOCK_KEYSTORE_PASSWORD', 'storePassword')
+                keyAlias signingValue('CELLLOCK_KEY_ALIAS', 'keyAlias')
+                keyPassword signingValue('CELLLOCK_KEY_PASSWORD', 'keyPassword')
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (releaseStore) signingConfig signingConfigs.release
+        }
+    }
     packaging { jniLibs { useLegacyPackaging true } }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    lint { abortOnError true }
+}
+
+// 原生后端由 build-native.ps1 生成；缺失时拒绝打包，避免产出没有后端的 APK。
+tasks.named('preBuild') {
+    doFirst {
+        def libs = ['qmi', 'read', 'diag', 'efs'].collect { file("src/main/jniLibs/arm64-v8a/libcelllock_${it}.so") }
+        def missing = libs.findAll { !it.exists() }
+        if (!missing.isEmpty()) {
+            throw new GradleException("缺少原生后端 ${missing*.name}，请先运行 ./build-native.ps1 -Ndk <NDK目录>")
+        }
+    }
 }
